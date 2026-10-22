@@ -70,7 +70,12 @@ const donorEligibilitySchema = {
     },
     statusLabel: {
       type: Type.STRING,
-      description: 'Human-readable clinical status title',
+      enum: [
+        'Preliminary Screening: No Immediate Flag',
+        'Preliminary Screening: Needs Manual Review',
+        'Preliminary Screening: Potential Temporary Deferral',
+      ],
+      description: 'Human-readable preliminary screening status title',
     },
     summary: {
       type: Type.STRING,
@@ -83,11 +88,11 @@ const donorEligibilitySchema = {
         properties: {
           name: {
             type: Type.STRING,
-            description: 'Parameter evaluated (Age, Weight, Hemoglobin, Interval, Medication, Infection)',
+            description: 'Parameter evaluated (Age, Weight, Hemoglobin, Interval, Health, Medications, History, Self-Deferral)',
           },
           value: {
             type: Type.STRING,
-            description: 'Entered candidate value',
+            description: 'Entered candidate value or status',
           },
           status: {
             type: Type.STRING,
@@ -104,14 +109,14 @@ const donorEligibilitySchema = {
     },
     recommendation: {
       type: Type.STRING,
-      description: 'Concrete next steps for the donor',
+      description: 'Concrete supportive next steps for the donor without medical clearance claims',
     },
     disclaimer: {
       type: Type.STRING,
-      description: 'Mandatory clinical safety notice: Final donor eligibility must be confirmed by the hospital or qualified blood-bank professional.',
+      description: 'Mandatory clinical safety notice: Final eligibility for blood donation must be determined by a qualified blood-centre/blood-bank professional after the required examination and screening.',
     },
   },
-  required: ['status', 'summary', 'parameters', 'recommendation', 'disclaimer'],
+  required: ['status', 'statusLabel', 'summary', 'parameters', 'recommendation', 'disclaimer'],
 };
 
 // Model helper: Use gemini-3.1-flash-lite as primary (fast, robust quota), with gemini-3.8-flash fallback
@@ -208,9 +213,38 @@ app.post('/api/ai/donor-eligibility', async (req, res) => {
       weightKg,
       hemoglobin,
       lastDonatedMonths,
-      recentMedicationAspirin,
+      // Recent Health & Medication Screening
+      feelingUnwell,
       recentFeverInfection,
+      recentAntibioticsOrMedication,
+      recentMedicationAspirin,
+      recentVaccination,
+      recentAlcoholUse,
+      recentSurgeryOrProcedure,
+      recentDentalProcedure,
+      recentTattooOrPiercing,
+      skinInfectionAtSite,
+      // Donation & Medical History Screening
+      previousFaintingOrReaction,
+      previousAdviceNotToDonate,
+      recentBloodTransfusion,
+      knownMedicalCondition,
+      pregnancyOrBreastfeeding,
+      otherHealthConcerns,
+      // Self-Deferral
+      selfDeferral,
+      // Consent & Privacy
+      screeningAcknowledgement,
+      privacyConsent,
     } = req.body;
+
+    // Validate Consent & Privacy Acknowledgements (Required)
+    if (!screeningAcknowledgement || !privacyConsent) {
+      return res.status(400).json({
+        error: 'Please review and confirm the required acknowledgements before continuing.',
+        code: 'MISSING_CONSENT',
+      });
+    }
 
     if (!age || !weightKg || !hemoglobin) {
       return res.status(400).json({
@@ -228,33 +262,74 @@ app.post('/api/ai/donor-eligibility', async (req, res) => {
     }
 
     const systemInstruction = `You are a Clinical Blood Donation Safety & Pre-Screening Assistant for Dofi, a blood donation coordination platform.
-You evaluate preliminary blood donor screening parameters against standard blood banking eligibility principles (e.g., general WHO, AABB, and Red Cross demonstration references).
-IMPORTANT MEDICAL SAFETY: This is a preliminary AI-assisted screening assessment ONLY, NOT a definitive medical approval, medical clearance, or guarantee of eligibility.
-Final donor eligibility must be confirmed by the hospital or qualified blood-bank professional.`;
+You evaluate preliminary blood donor screening parameters against standard voluntary blood banking eligibility principles (e.g., Indian NBTC/DGHS, WHO, AABB demonstration references).
+CRITICAL MEDICAL SAFETY BOUNDARIES:
+1. This is a PRELIMINARY AI-ASSISTED SCREENING ASSESSMENT ONLY. It does NOT replace certified on-site clinical assessment.
+2. NEVER use or output forbidden phrases: "Medically Cleared", "Approved to Donate", "Safe to Donate", "Guaranteed Eligible".
+3. Allowed overall status values:
+   - "eligible_for_review" (statusLabel MUST BE "Preliminary Screening: No Immediate Flag")
+   - "needs_manual_review" (statusLabel MUST BE "Preliminary Screening: Needs Manual Review")
+   - "temporarily_deferred" (statusLabel MUST BE "Preliminary Screening: Potential Temporary Deferral")
+4. If the candidate selected self-deferral ("I am unsure whether I should donate today"), the overall status MUST be "needs_manual_review" with statusLabel "Preliminary Screening: Needs Manual Review". Provide supportive, non-judgmental guidance encouraging consultation with the blood centre staff.
+5. The disclaimer MUST state: "Final eligibility for blood donation must be determined by a qualified blood-centre/blood-bank professional after the required examination and screening."
+6. The AI must never make the final clinical decision.`;
 
-    const prompt = `Evaluate the following preliminary blood donation candidate parameters:
-Candidate Name: ${candidateName || 'Candidate'}
-Blood Group: ${bloodGroup || 'Blood Donation'}
-Age: ${age} years (reference range: 18-65)
-Weight: ${weightKg} kg (reference minimum: 50 kg)
-Hemoglobin: ${hemoglobin} g/dL (reference minimum: 12.5 g/dL females, 13.0 g/dL males)
-Last Donated: ${lastDonatedMonths !== undefined && lastDonatedMonths !== null ? `${lastDonatedMonths} months ago` : 'First-time or not recorded'} (reference minimum interval: 3 months / 84 days)
-Recent Medication / Aspirin in past 48h: ${recentMedicationAspirin ? 'Yes' : 'No'} (aspirin deferral for platelet apheresis: 48h; whole blood acceptable)
-Recent Fever / Cough / Acute Infection in past 14 days: ${recentFeverInfection ? 'Yes' : 'No'} (must be symptom-free for at least 14 days)
+    const prompt = `Evaluate the following voluntary blood donation pre-screening questionnaire submission:
 
-Evaluate all 6 parameters individually:
-1. Age
-2. Weight
-3. Hemoglobin
-4. Last Donation Interval
-5. Recent Medication / Aspirin
-6. Recent Fever / Infection
+CANDIDATE PARAMETERS:
+- Candidate Name: ${candidateName || 'Candidate'}
+- Blood Group: ${bloodGroup || 'Blood Donation'}
+- Age: ${age} years (reference range: 18-65 years)
+- Weight: ${weightKg} kg (reference minimum: 50 kg)
+- Hemoglobin: ${hemoglobin} g/dL (reference minimum: 12.5 g/dL females, 13.0 g/dL males)
+- Last Donation Interval: ${lastDonatedMonths !== undefined && lastDonatedMonths !== null && lastDonatedMonths !== '' ? `${lastDonatedMonths} months ago` : 'First-time donor or unrecorded'} (minimum interval: 3 months / 84 days)
 
-Assign each parameter a status of "pass", "review", or "flag" with an objective medical reason.
-Synthesize the overall status:
-- "eligible_for_review": all parameters pass or minor non-deferring observation.
-- "temporarily_deferred": recent infection within 14 days, donation interval < 3 months, or temporary medication concern.
-- "needs_manual_review": borderline age, borderline weight (<50kg), or hemoglobin below thresholds requiring on-site hematology evaluation.`;
+RECENT HEALTH & MEDICATION SCREENING:
+- Currently feeling unwell: ${feelingUnwell ? 'YES (flag - defer until well)' : 'No'}
+- Recent fever, cough, or acute infection in past 14 days: ${recentFeverInfection ? 'YES (flag - 14-day symptom-free period required)' : 'No'}
+- Recent antibiotics or prescription medication: ${recentAntibioticsOrMedication ? 'YES (flag/review - complete course & check indication)' : 'No'}
+- Recent aspirin / NSAID in past 48h: ${recentMedicationAspirin ? 'YES (review - 48h platelet deferral; whole blood acceptable)' : 'No'}
+- Recent vaccination: ${recentVaccination ? 'YES (review - check vaccine category)' : 'No'}
+- Recent alcohol / intoxicant use: ${recentAlcoholUse ? 'YES (review - minimum 24h sober interval required)' : 'No'}
+- Recent surgery, hospitalization, or major procedure: ${recentSurgeryOrProcedure ? 'YES (flag - procedural recovery deferral)' : 'No'}
+- Recent dental procedure / extraction: ${recentDentalProcedure ? 'YES (flag/review - 24-72h recovery required)' : 'No'}
+- Recent tattooing or body piercing: ${recentTattooOrPiercing ? 'YES (flag - 6-12 month standard screening deferral)' : 'No'}
+- Skin infection, wound, or lesion at donation site: ${skinInfectionAtSite ? 'YES (flag - phlebotomy site must be clear & healthy)' : 'No'}
+
+DONATION & MEDICAL HISTORY:
+- Previous fainting or adverse reaction during donation: ${previousFaintingOrReaction ? 'YES (review - staff hydration & observation precaution)' : 'No'}
+- Previous advice from blood centre not to donate: ${previousAdviceNotToDonate ? 'YES (flag/review - medical officer evaluation needed)' : 'No'}
+- Recent blood transfusion: ${recentBloodTransfusion ? 'YES (flag - 6-12 month deferral)' : 'No'}
+- Known medical condition affecting donation safety: ${knownMedicalCondition ? 'YES (review - medical officer evaluation needed)' : 'No'}
+- Pregnancy, recent pregnancy, or breastfeeding: ${pregnancyOrBreastfeeding ? 'YES (flag - deferred during pregnancy and lactation)' : 'No'}
+- Other health concerns disclosed: ${otherHealthConcerns ? 'YES (review - discuss with staff)' : 'No'}
+
+SELF-DEFERRAL OPTION:
+- Unsure whether to donate / Requesting staff consultation: ${selfDeferral ? 'YES (donor opted for supportive self-deferral consultation)' : 'No'}
+
+CONSENT & PRIVACY STATUS:
+- Preliminary Screening Acknowledgement: Confirmed
+- Personal Data Processing Consent: Confirmed
+
+INSTRUCTIONS:
+Evaluate all relevant screening categories into concise individual parameter entries in the "parameters" array:
+1. Age Eligibility
+2. Weight Requirement
+3. Hemoglobin Level
+4. Donation Rest Interval
+5. Acute Illness & Infection Symptoms
+6. Medications (Antibiotics / Aspirin)
+7. Recent Procedures (Dental / Surgery / Tattoo)
+8. Medical History & Past Reactions
+9. Self-Deferral / Donor Consultation
+
+Assign each parameter a status of "pass", "review", or "flag" with an objective clinical rationale.
+Synthesize overall status:
+- "eligible_for_review" (statusLabel: "Preliminary Screening: No Immediate Flag"): all parameters pass or minor non-deferring observations.
+- "temporarily_deferred" (statusLabel: "Preliminary Screening: Potential Temporary Deferral"): active symptoms, fever, recent infection within 14 days, recent antibiotics, dental procedure within 72h, recent tattoo/transfusion/surgery, or pregnancy.
+- "needs_manual_review" (statusLabel: "Preliminary Screening: Needs Manual Review"): self-deferral requested, borderline measurements, past fainting reaction, or disclosed medical condition.
+
+Never use "Medically Cleared" or "Approved to Donate". Return strict JSON conforming to schema.`;
 
     const { text, model } = await executeGeminiPrompt(prompt, systemInstruction, true, donorEligibilitySchema);
 
@@ -308,27 +383,31 @@ Synthesize the overall status:
       });
     }
 
-    // Ensure statusLabel
-    if (!parsed.statusLabel) {
-      parsed.statusLabel =
-        parsed.status === 'eligible_for_review'
-          ? 'Eligible for Clinical Review'
-          : parsed.status === 'temporarily_deferred'
-          ? 'Temporarily Deferred'
-          : 'Needs Manual Clinical Review';
+    // Ensure statusLabel strictly adheres to allowed values
+    if (parsed.status === 'eligible_for_review') {
+      parsed.statusLabel = 'Preliminary Screening: No Immediate Flag';
+    } else if (parsed.status === 'temporarily_deferred') {
+      parsed.statusLabel = 'Preliminary Screening: Potential Temporary Deferral';
+    } else {
+      parsed.statusLabel = 'Preliminary Screening: Needs Manual Review';
     }
 
     // Ensure disclaimer
-    if (!parsed.disclaimer) {
-      parsed.disclaimer =
-        'This document is an AI-assisted preliminary screening assessment only. It is not medical clearance or a guarantee of eligibility. Final donor eligibility must be confirmed by the hospital or qualified blood-bank professional.';
-    }
+    parsed.disclaimer =
+      'Final eligibility for blood donation must be determined by a qualified blood-centre/blood-bank professional after the required examination and screening.';
 
     return res.json({
       success: true,
       aiPowered: true,
       modelUsed: model,
-      data: parsed,
+      data: {
+        ...parsed,
+        consentStatus: {
+          screeningAcknowledged: Boolean(screeningAcknowledgement),
+          privacyConsented: Boolean(privacyConsent),
+          timestamp: new Date().toISOString(),
+        },
+      },
     });
   } catch (error: any) {
     console.error('[Dofi AI] Error in /api/ai/donor-eligibility:', error?.message || error);

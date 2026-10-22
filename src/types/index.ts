@@ -534,5 +534,10 @@ export interface DonorEligibilityScreeningResult {
   disclaimer: string;
   reportId?: string;
   generatedAt?: string;
+  consentStatus?: {
+    screeningAcknowledged: boolean;
+    privacyConsented: boolean;
+    timestamp?: string;
+  };
 }
 

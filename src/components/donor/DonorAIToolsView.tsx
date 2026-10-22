@@ -16,17 +16,19 @@ import {
   RefreshCw,
   Info,
   Droplet,
-  Scale,
-  Calendar,
-  Pill,
   Activity,
   Check,
-  RotateCcw
+  Stethoscope,
+  ShieldCheck,
+  HelpCircle,
+  Lock,
+  ExternalLink
 } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
 import { BLOOD_DONOR_DEMO_POLICY } from '../../data/donorPolicy';
 import { BloodGroup, DonorEligibilityScreeningResult } from '../../types';
 import { downloadEligibilityPDF, createEligibilityPDF } from '../../utils/generateEligibilityPDF';
+import { PrivacyNoticeModal } from '../common/PrivacyNoticeModal';
 
 const BLOOD_GROUPS: BloodGroup[] = ['O-', 'O+', 'A-', 'A+', 'B-', 'B+', 'AB-', 'AB+'];
 
@@ -36,7 +38,7 @@ export const DonorAIToolsView: React.FC = () => {
   const currentDonorProfile = donors.find(d => d.userId === currentUser.id || (firebaseUser && d.userId === firebaseUser.uid))
     || (currentUser.role === 'donor' ? donors.find(d => d.id === 'dnr_001') : undefined);
 
-  // Form State
+  // 1. Candidate Parameters State
   const [candidateName, setCandidateName] = useState(currentUser.name || 'Marcus Vance');
   const [bloodGroup, setBloodGroup] = useState<BloodGroup>(
     (currentDonorProfile?.bloodDetails?.bloodGroup as BloodGroup) || 'O+'
@@ -45,8 +47,35 @@ export const DonorAIToolsView: React.FC = () => {
   const [weightKg, setWeightKg] = useState<number>(68);
   const [hemoglobin, setHemoglobin] = useState<number>(14.2);
   const [lastDonatedMonths, setLastDonatedMonths] = useState<number | ''>(4);
-  const [recentMedicationAspirin, setRecentMedicationAspirin] = useState<boolean>(false);
+
+  // 2. Recent Health & Medication Screening State
+  const [feelingUnwell, setFeelingUnwell] = useState<boolean>(false);
   const [recentFeverInfection, setRecentFeverInfection] = useState<boolean>(false);
+  const [recentAntibioticsOrMedication, setRecentAntibioticsOrMedication] = useState<boolean>(false);
+  const [recentMedicationAspirin, setRecentMedicationAspirin] = useState<boolean>(false);
+  const [recentVaccination, setRecentVaccination] = useState<boolean>(false);
+  const [recentAlcoholUse, setRecentAlcoholUse] = useState<boolean>(false);
+  const [recentSurgeryOrProcedure, setRecentSurgeryOrProcedure] = useState<boolean>(false);
+  const [recentDentalProcedure, setRecentDentalProcedure] = useState<boolean>(false);
+  const [recentTattooOrPiercing, setRecentTattooOrPiercing] = useState<boolean>(false);
+  const [skinInfectionAtSite, setSkinInfectionAtSite] = useState<boolean>(false);
+
+  // 4. Donation / Medical History Screening State
+  const [previousFaintingOrReaction, setPreviousFaintingOrReaction] = useState<boolean>(false);
+  const [previousAdviceNotToDonate, setPreviousAdviceNotToDonate] = useState<boolean>(false);
+  const [recentBloodTransfusion, setRecentBloodTransfusion] = useState<boolean>(false);
+  const [knownMedicalCondition, setKnownMedicalCondition] = useState<boolean>(false);
+  const [pregnancyOrBreastfeeding, setPregnancyOrBreastfeeding] = useState<boolean>(false);
+  const [otherHealthConcerns, setOtherHealthConcerns] = useState<boolean>(false);
+
+  // 5. Self-Deferral Option State
+  const [selfDeferral, setSelfDeferral] = useState<boolean>(false);
+
+  // 6. Consent & Privacy State (Unchecked by default)
+  const [screeningAcknowledgement, setScreeningAcknowledgement] = useState<boolean>(false);
+  const [privacyConsent, setPrivacyConsent] = useState<boolean>(false);
+  const [consentValidationError, setConsentValidationError] = useState<string | null>(null);
+  const [isPrivacyModalOpen, setIsPrivacyModalOpen] = useState<boolean>(false);
 
   // Execution & Output State
   const [isLoading, setIsLoading] = useState<boolean>(false);
@@ -54,9 +83,28 @@ export const DonorAIToolsView: React.FC = () => {
   const [screeningResult, setScreeningResult] = useState<DonorEligibilityScreeningResult | null>(null);
   const [profileSyncNotice, setProfileSyncNotice] = useState<string | null>(null);
 
-  // Quick Preset Handlers
+  // Quick Preset Handlers (Retained exactly as requested)
   const applyPreset = (type: 'eligible' | 'deferral_infection' | 'underweight' | 'aspirin') => {
     setErrorBanner(null);
+    setConsentValidationError(null);
+
+    // Reset health & history checkboxes
+    setFeelingUnwell(false);
+    setRecentAntibioticsOrMedication(false);
+    setRecentVaccination(false);
+    setRecentAlcoholUse(false);
+    setRecentSurgeryOrProcedure(false);
+    setRecentDentalProcedure(false);
+    setRecentTattooOrPiercing(false);
+    setSkinInfectionAtSite(false);
+    setPreviousFaintingOrReaction(false);
+    setPreviousAdviceNotToDonate(false);
+    setRecentBloodTransfusion(false);
+    setKnownMedicalCondition(false);
+    setPregnancyOrBreastfeeding(false);
+    setOtherHealthConcerns(false);
+    setSelfDeferral(false);
+
     if (type === 'eligible') {
       setAge(28);
       setWeightKg(68);
@@ -69,8 +117,9 @@ export const DonorAIToolsView: React.FC = () => {
       setWeightKg(72);
       setHemoglobin(13.8);
       setLastDonatedMonths(5);
-      setRecentMedicationAspirin(false);
+      setFeelingUnwell(true);
       setRecentFeverInfection(true); // Active/recent infection
+      setRecentMedicationAspirin(false);
     } else if (type === 'underweight') {
       setAge(22);
       setWeightKg(46); // Under 50kg
@@ -90,9 +139,21 @@ export const DonorAIToolsView: React.FC = () => {
 
   const handleRunScreening = async (e: React.FormEvent) => {
     e.preventDefault();
-    setIsLoading(true);
     setErrorBanner(null);
     setProfileSyncNotice(null);
+    setConsentValidationError(null);
+
+    // Section 5: Validate required consent checkboxes
+    if (!screeningAcknowledgement || !privacyConsent) {
+      setConsentValidationError('Please review and confirm the required acknowledgements before continuing.');
+      const consentSection = document.getElementById('section-consent-privacy');
+      if (consentSection) {
+        consentSection.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }
+      return;
+    }
+
+    setIsLoading(true);
 
     try {
       const response = await fetch('/api/ai/donor-eligibility', {
@@ -107,8 +168,29 @@ export const DonorAIToolsView: React.FC = () => {
           weightKg: Number(weightKg),
           hemoglobin: Number(hemoglobin),
           lastDonatedMonths: lastDonatedMonths === '' ? null : Number(lastDonatedMonths),
-          recentMedicationAspirin,
+          // Recent Health & Medication
+          feelingUnwell,
           recentFeverInfection,
+          recentAntibioticsOrMedication,
+          recentMedicationAspirin,
+          recentVaccination,
+          recentAlcoholUse,
+          recentSurgeryOrProcedure,
+          recentDentalProcedure,
+          recentTattooOrPiercing,
+          skinInfectionAtSite,
+          // Donation & Medical History
+          previousFaintingOrReaction,
+          previousAdviceNotToDonate,
+          recentBloodTransfusion,
+          knownMedicalCondition,
+          pregnancyOrBreastfeeding,
+          otherHealthConcerns,
+          // Self-Deferral
+          selfDeferral,
+          // Consent & Privacy
+          screeningAcknowledgement,
+          privacyConsent,
         }),
       });
 
@@ -126,7 +208,10 @@ export const DonorAIToolsView: React.FC = () => {
         const code = json?.code;
         const msg = json?.error;
 
-        if (response.status === 503 || code === 'MISSING_API_KEY') {
+        if (code === 'MISSING_CONSENT') {
+          setConsentValidationError(msg || 'Please review and confirm the required acknowledgements before continuing.');
+          throw new Error(msg || 'Please review and confirm the required acknowledgements before continuing.');
+        } else if (response.status === 503 || code === 'MISSING_API_KEY') {
           throw new Error('AI service is not configured.');
         } else if (response.status === 429 || code === 'QUOTA_EXCEEDED') {
           throw new Error('AI service quota exceeded. Please try again later.');
@@ -157,7 +242,13 @@ export const DonorAIToolsView: React.FC = () => {
           day: 'numeric',
           year: 'numeric',
         }),
+        consentStatus: {
+          screeningAcknowledged: true,
+          privacyConsented: true,
+          timestamp: new Date().toISOString(),
+        },
       };
+
       setScreeningResult(enriched);
     } catch (err: any) {
       console.error('[DonorAIToolsView] Screening error:', err);
@@ -182,7 +273,6 @@ export const DonorAIToolsView: React.FC = () => {
 
   const handleApplyToProfile = () => {
     if (!screeningResult) return;
-    // Store in local storage for the donor session
     try {
       const record = {
         status: screeningResult.status,
@@ -190,6 +280,7 @@ export const DonorAIToolsView: React.FC = () => {
         evaluatedAt: new Date().toISOString(),
         candidateName,
         bloodGroup,
+        consentRecorded: true,
       };
       localStorage.setItem('dofi_latest_donor_screening', JSON.stringify(record));
       setProfileSyncNotice('Screening assessment logged to active donor session. Note: This preliminary triage does not replace certified on-site clinical screening.');
@@ -201,6 +292,13 @@ export const DonorAIToolsView: React.FC = () => {
 
   return (
     <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-6">
+      
+      {/* Privacy Notice Modal */}
+      <PrivacyNoticeModal
+        isOpen={isPrivacyModalOpen}
+        onClose={() => setIsPrivacyModalOpen(false)}
+      />
+
       {/* 1. Header Section */}
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-slate-200 pb-5">
         <div>
@@ -213,7 +311,7 @@ export const DonorAIToolsView: React.FC = () => {
             </h1>
           </div>
           <p className="text-sm text-slate-600 mt-1 max-w-2xl">
-            Evaluate preliminary blood donation eligibility against standard clinical demonstration criteria powered by Google Gemini. Generate verifiable A4 PDF reports for blood bank presentation.
+            Evaluate comprehensive blood donor pre-donation parameters, measurements, and health history against standard clinical references. Generate verifiable A4 PDF reports for blood bank presentation.
           </p>
         </div>
 
@@ -228,7 +326,7 @@ export const DonorAIToolsView: React.FC = () => {
         </div>
       </div>
 
-      {/* 2. Mandatory Medical Safety Callout Banner */}
+      {/* 2. Mandatory Medical Safety Notice */}
       <aside aria-label="Clinical safety warning" className="rounded-xl border border-rose-200 bg-rose-50/90 p-4 shadow-xs">
         <div className="flex items-start gap-3">
           <div className="p-1 rounded-lg bg-rose-100 text-rose-700 shrink-0 mt-0.5">
@@ -239,10 +337,10 @@ export const DonorAIToolsView: React.FC = () => {
               <span>Mandatory Medical Safety Notice — Preliminary Pre-Screening Only</span>
             </div>
             <p>
-              This tool provides <strong>preliminary AI-assisted donor screening assessment</strong> based on reference blood banking guidelines. It is <strong>NOT a definitive medical approval, medical clearance, or guarantee of eligibility</strong>.
+              This questionnaire and AI evaluation provide <strong>preliminary donor screening decision-support only</strong>. It is <strong>NOT medical clearance, an official medical diagnosis, or a guarantee of eligibility</strong>.
             </p>
             <p className="text-rose-800">
-              Final donor qualification, physical hemoglobin pinprick, blood pressure, and certified serological screening must be performed in-person by certified transfusion staff at the blood bank or hospital.
+              Final eligibility for blood donation must be determined by a qualified blood-centre/blood-bank professional after the required in-person examination, physical hemoglobin test, and confidential donor consultation.
             </p>
           </div>
         </div>
@@ -251,193 +349,552 @@ export const DonorAIToolsView: React.FC = () => {
       {/* 3. Main Workspace: Two-Column Responsive Layout */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
         
-        {/* LEFT COLUMN: Input Form & Reference Policy (5 cols on lg) */}
-        <div className="lg:col-span-5 space-y-6">
-          <form onSubmit={handleRunScreening} className="bg-white rounded-2xl border border-slate-200 p-6 shadow-xs space-y-5">
-            <div className="flex items-center justify-between border-b border-slate-100 pb-3">
-              <h2 className="text-base font-bold text-slate-900 flex items-center gap-2">
-                <Activity className="h-4 w-4 text-teal-600" />
-                <span>Candidate Parameters</span>
-              </h2>
-              <span className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider">
-                Step 1 of 2
-              </span>
-            </div>
-
-            {/* Quick Presets for Jury / Testers */}
+        {/* LEFT COLUMN: Input Form & Reference Policy (6 cols on lg) */}
+        <div className="lg:col-span-6 space-y-6">
+          <form onSubmit={handleRunScreening} className="bg-white rounded-2xl border border-slate-200 p-5 sm:p-6 shadow-xs space-y-6">
+            
+            {/* Quick Test Scenarios Header */}
             <div>
-              <div className="flex items-center justify-between mb-1.5">
-                <label className="text-xs font-semibold text-slate-600">Quick Test Scenarios:</label>
+              <div className="flex items-center justify-between mb-2">
+                <label className="text-xs font-bold text-slate-700 uppercase tracking-wider">
+                  Quick Test Scenarios
+                </label>
+                <span className="text-[11px] text-slate-400">Pre-fill demonstration values</span>
               </div>
-              <div className="grid grid-cols-2 gap-1.5 text-[11px]">
+              <div className="grid grid-cols-2 gap-2 text-[11px]">
                 <button
                   type="button"
                   onClick={() => applyPreset('eligible')}
-                  className="px-2.5 py-1.5 rounded-lg border border-emerald-200 bg-emerald-50 text-emerald-800 hover:bg-emerald-100 font-medium text-left truncate transition cursor-pointer"
+                  className="px-2.5 py-2 rounded-xl border border-emerald-200 bg-emerald-50 text-emerald-800 hover:bg-emerald-100 font-medium text-left truncate transition cursor-pointer"
                 >
                   ✓ Standard Eligible (28y, 68kg)
                 </button>
                 <button
                   type="button"
                   onClick={() => applyPreset('deferral_infection')}
-                  className="px-2.5 py-1.5 rounded-lg border border-amber-200 bg-amber-50 text-amber-800 hover:bg-amber-100 font-medium text-left truncate transition cursor-pointer"
+                  className="px-2.5 py-2 rounded-xl border border-amber-200 bg-amber-50 text-amber-800 hover:bg-amber-100 font-medium text-left truncate transition cursor-pointer"
                 >
                   ⏳ Recent Infection (14-day)
                 </button>
                 <button
                   type="button"
                   onClick={() => applyPreset('underweight')}
-                  className="px-2.5 py-1.5 rounded-lg border border-indigo-200 bg-indigo-50 text-indigo-800 hover:bg-indigo-100 font-medium text-left truncate transition cursor-pointer"
+                  className="px-2.5 py-2 rounded-xl border border-indigo-200 bg-indigo-50 text-indigo-800 hover:bg-indigo-100 font-medium text-left truncate transition cursor-pointer"
                 >
                   ⚠ Underweight (&lt;50 kg)
                 </button>
                 <button
                   type="button"
                   onClick={() => applyPreset('aspirin')}
-                  className="px-2.5 py-1.5 rounded-lg border border-purple-200 bg-purple-50 text-purple-800 hover:bg-purple-100 font-medium text-left truncate transition cursor-pointer"
+                  className="px-2.5 py-2 rounded-xl border border-purple-200 bg-purple-50 text-purple-800 hover:bg-purple-100 font-medium text-left truncate transition cursor-pointer"
                 >
                   💊 Aspirin Intake (48h)
                 </button>
               </div>
             </div>
 
-            {/* Candidate Name & Blood Group */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              <div>
-                <label className="block text-xs font-semibold text-slate-700 mb-1">
-                  Candidate Name
+            {/* SECTION 1: Candidate Parameters */}
+            <div className="pt-2 border-t border-slate-100 space-y-4">
+              <div className="flex items-center justify-between">
+                <h2 className="text-sm font-bold text-slate-900 flex items-center gap-2">
+                  <span className="flex h-5 w-5 items-center justify-center rounded-full bg-teal-100 text-[11px] font-black text-teal-800">
+                    1
+                  </span>
+                  <span>Candidate Parameters</span>
+                </h2>
+                <span className="text-[11px] text-slate-400 font-medium">Core Demographics</span>
+              </div>
+
+              {/* Candidate Name & Blood Group */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">
+                    Candidate Name
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    value={candidateName}
+                    onChange={(e) => setCandidateName(e.target.value)}
+                    placeholder="e.g. Marcus Vance"
+                    className="w-full text-xs font-medium text-slate-900 bg-slate-50 border border-slate-300 rounded-lg px-3 py-2 focus:bg-white focus:outline-none focus:ring-2 focus:ring-teal-500/20 focus:border-teal-600 transition"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">
+                    Blood Group
+                  </label>
+                  <select
+                    value={bloodGroup}
+                    onChange={(e) => setBloodGroup(e.target.value as BloodGroup)}
+                    className="w-full text-xs font-semibold text-slate-900 bg-slate-50 border border-slate-300 rounded-lg px-3 py-2 focus:bg-white focus:outline-none focus:ring-2 focus:ring-teal-500/20 focus:border-teal-600 transition cursor-pointer"
+                  >
+                    {BLOOD_GROUPS.map((bg) => (
+                      <option key={bg} value={bg}>
+                        {bg}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              {/* Age & Weight */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
+                <div>
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="text-xs font-semibold text-slate-700">Age (Years)</label>
+                    <span className="text-[10px] text-slate-400">Ref: 18–65</span>
+                  </div>
+                  <input
+                    type="number"
+                    min="16"
+                    max="85"
+                    required
+                    value={age}
+                    onChange={(e) => setAge(Number(e.target.value))}
+                    className="w-full text-xs font-medium text-slate-900 bg-slate-50 border border-slate-300 rounded-lg px-3 py-2 focus:bg-white focus:outline-none focus:ring-2 focus:ring-teal-500/20 focus:border-teal-600 transition"
+                  />
+                </div>
+
+                <div>
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="text-xs font-semibold text-slate-700">Weight (kg)</label>
+                    <span className="text-[10px] text-slate-400">Min: 50 kg</span>
+                  </div>
+                  <input
+                    type="number"
+                    min="30"
+                    max="200"
+                    step="0.5"
+                    required
+                    value={weightKg}
+                    onChange={(e) => setWeightKg(Number(e.target.value))}
+                    className="w-full text-xs font-medium text-slate-900 bg-slate-50 border border-slate-300 rounded-lg px-3 py-2 focus:bg-white focus:outline-none focus:ring-2 focus:ring-teal-500/20 focus:border-teal-600 transition"
+                  />
+                </div>
+              </div>
+
+              {/* Hemoglobin & Interval */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
+                <div>
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="text-xs font-semibold text-slate-700">Hemoglobin (g/dL)</label>
+                    <span className="text-[10px] text-slate-400">Min: 12.5–13.0</span>
+                  </div>
+                  <input
+                    type="number"
+                    min="8"
+                    max="20"
+                    step="0.1"
+                    required
+                    value={hemoglobin}
+                    onChange={(e) => setHemoglobin(Number(e.target.value))}
+                    className="w-full text-xs font-medium text-slate-900 bg-slate-50 border border-slate-300 rounded-lg px-3 py-2 focus:bg-white focus:outline-none focus:ring-2 focus:ring-teal-500/20 focus:border-teal-600 transition"
+                  />
+                </div>
+
+                <div>
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="text-xs font-semibold text-slate-700">Last Donated (Months)</label>
+                    <span className="text-[10px] text-slate-400">Min: ≥3 mo</span>
+                  </div>
+                  <input
+                    type="number"
+                    min="0"
+                    max="60"
+                    value={lastDonatedMonths}
+                    onChange={(e) => setLastDonatedMonths(e.target.value === '' ? '' : Number(e.target.value))}
+                    placeholder="Leave empty if first-time"
+                    className="w-full text-xs font-medium text-slate-900 bg-slate-50 border border-slate-300 rounded-lg px-3 py-2 focus:bg-white focus:outline-none focus:ring-2 focus:ring-teal-500/20 focus:border-teal-600 transition"
+                  />
+                </div>
+              </div>
+            </div>
+
+            {/* SECTION 2: Recent Health & Medication Screening */}
+            <div className="pt-4 border-t border-slate-100 space-y-3">
+              <div className="flex items-center justify-between">
+                <h2 className="text-sm font-bold text-slate-900 flex items-center gap-2">
+                  <span className="flex h-5 w-5 items-center justify-center rounded-full bg-teal-100 text-[11px] font-black text-teal-800">
+                    2
+                  </span>
+                  <span>Recent Health &amp; Medication Screening</span>
+                </h2>
+                <span className="text-[11px] text-slate-400">Yes / No checks</span>
+              </div>
+              <p className="text-[11px] text-slate-500">
+                Check any situations that apply to you recently:
+              </p>
+
+              <div className="space-y-2 text-xs">
+                {/* 1. Feeling unwell */}
+                <label className="flex items-start gap-3 p-2.5 rounded-xl border border-slate-200 bg-slate-50/70 hover:bg-slate-100/70 transition cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={feelingUnwell}
+                    onChange={(e) => setFeelingUnwell(e.target.checked)}
+                    className="mt-0.5 h-4 w-4 rounded border-slate-300 text-teal-600 focus:ring-teal-500"
+                  />
+                  <div>
+                    <span className="font-semibold text-slate-900 block">Currently feeling unwell</span>
+                    <span className="text-[11px] text-slate-500">Feeling sick, fatigued, nauseous, or experiencing acute discomfort today.</span>
+                  </div>
                 </label>
-                <input
-                  type="text"
-                  required
-                  value={candidateName}
-                  onChange={(e) => setCandidateName(e.target.value)}
-                  placeholder="e.g. Marcus Vance"
-                  className="w-full text-xs font-medium text-slate-900 bg-slate-50 border border-slate-300 rounded-lg px-3 py-2 focus:bg-white focus:outline-none focus:ring-2 focus:ring-teal-500/20 focus:border-teal-600 transition"
-                />
-              </div>
 
-              <div>
-                <label className="block text-xs font-semibold text-slate-700 mb-1">
-                  Blood Group
+                {/* 2. Recent Fever/Infection */}
+                <label className="flex items-start gap-3 p-2.5 rounded-xl border border-slate-200 bg-slate-50/70 hover:bg-slate-100/70 transition cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={recentFeverInfection}
+                    onChange={(e) => setRecentFeverInfection(e.target.checked)}
+                    className="mt-0.5 h-4 w-4 rounded border-slate-300 text-teal-600 focus:ring-teal-500"
+                  />
+                  <div>
+                    <span className="font-semibold text-slate-900 block">Recent fever, cough, or acute infection (Past 14 Days)</span>
+                    <span className="text-[11px] text-slate-500">Must be symptom-free from febrile illnesses for at least 14 days before donation.</span>
+                  </div>
                 </label>
-                <select
-                  value={bloodGroup}
-                  onChange={(e) => setBloodGroup(e.target.value as BloodGroup)}
-                  className="w-full text-xs font-semibold text-slate-900 bg-slate-50 border border-slate-300 rounded-lg px-3 py-2 focus:bg-white focus:outline-none focus:ring-2 focus:ring-teal-500/20 focus:border-teal-600 transition cursor-pointer"
-                >
-                  {BLOOD_GROUPS.map((bg) => (
-                    <option key={bg} value={bg}>
-                      {bg}
-                    </option>
-                  ))}
-                </select>
+
+                {/* 3. Antibiotics */}
+                <label className="flex items-start gap-3 p-2.5 rounded-xl border border-slate-200 bg-slate-50/70 hover:bg-slate-100/70 transition cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={recentAntibioticsOrMedication}
+                    onChange={(e) => setRecentAntibioticsOrMedication(e.target.checked)}
+                    className="mt-0.5 h-4 w-4 rounded border-slate-300 text-teal-600 focus:ring-teal-500"
+                  />
+                  <div>
+                    <span className="font-semibold text-slate-900 block">Recent antibiotics or prescription medication</span>
+                    <span className="text-[11px] text-slate-500">Antibiotics taken in the past 7 days or new prescription treatments under review.</span>
+                  </div>
+                </label>
+
+                {/* 4. Aspirin / NSAID */}
+                <label className="flex items-start gap-3 p-2.5 rounded-xl border border-slate-200 bg-slate-50/70 hover:bg-slate-100/70 transition cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={recentMedicationAspirin}
+                    onChange={(e) => setRecentMedicationAspirin(e.target.checked)}
+                    className="mt-0.5 h-4 w-4 rounded border-slate-300 text-teal-600 focus:ring-teal-500"
+                  />
+                  <div>
+                    <span className="font-semibold text-slate-900 block">Recent aspirin / NSAID intake (Past 48 Hours)</span>
+                    <span className="text-[11px] text-slate-500">Affects platelet aggregation (48h deferral for platelet donation; whole blood acceptable).</span>
+                  </div>
+                </label>
+
+                {/* 5. Vaccination */}
+                <label className="flex items-start gap-3 p-2.5 rounded-xl border border-slate-200 bg-slate-50/70 hover:bg-slate-100/70 transition cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={recentVaccination}
+                    onChange={(e) => setRecentVaccination(e.target.checked)}
+                    className="mt-0.5 h-4 w-4 rounded border-slate-300 text-teal-600 focus:ring-teal-500"
+                  />
+                  <div>
+                    <span className="font-semibold text-slate-900 block">Recent vaccination (Past 4 Weeks)</span>
+                    <span className="text-[11px] text-slate-500">Certain live-attenuated or routine immunizations require brief waiting periods.</span>
+                  </div>
+                </label>
+
+                {/* 6. Alcohol/intoxicant */}
+                <label className="flex items-start gap-3 p-2.5 rounded-xl border border-slate-200 bg-slate-50/70 hover:bg-slate-100/70 transition cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={recentAlcoholUse}
+                    onChange={(e) => setRecentAlcoholUse(e.target.checked)}
+                    className="mt-0.5 h-4 w-4 rounded border-slate-300 text-teal-600 focus:ring-teal-500"
+                  />
+                  <div>
+                    <span className="font-semibold text-slate-900 block">Recent alcohol or intoxicant use (Past 24 Hours)</span>
+                    <span className="text-[11px] text-slate-500">Donors must be fully sober and well-hydrated at the time of collection.</span>
+                  </div>
+                </label>
+
+                {/* 7. Surgery */}
+                <label className="flex items-start gap-3 p-2.5 rounded-xl border border-slate-200 bg-slate-50/70 hover:bg-slate-100/70 transition cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={recentSurgeryOrProcedure}
+                    onChange={(e) => setRecentSurgeryOrProcedure(e.target.checked)}
+                    className="mt-0.5 h-4 w-4 rounded border-slate-300 text-teal-600 focus:ring-teal-500"
+                  />
+                  <div>
+                    <span className="font-semibold text-slate-900 block">Recent surgery, hospitalization, or major procedure</span>
+                    <span className="text-[11px] text-slate-500">Major medical interventions or hospital admissions within the past 6 months.</span>
+                  </div>
+                </label>
+
+                {/* 8. Dental */}
+                <label className="flex items-start gap-3 p-2.5 rounded-xl border border-slate-200 bg-slate-50/70 hover:bg-slate-100/70 transition cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={recentDentalProcedure}
+                    onChange={(e) => setRecentDentalProcedure(e.target.checked)}
+                    className="mt-0.5 h-4 w-4 rounded border-slate-300 text-teal-600 focus:ring-teal-500"
+                  />
+                  <div>
+                    <span className="font-semibold text-slate-900 block">Recent dental procedure or extraction (Past 72 Hours)</span>
+                    <span className="text-[11px] text-slate-500">Minor cleanings typically require 24h; tooth extractions require 72h complete healing.</span>
+                  </div>
+                </label>
+
+                {/* 9. Tattoo / Piercing */}
+                <label className="flex items-start gap-3 p-2.5 rounded-xl border border-slate-200 bg-slate-50/70 hover:bg-slate-100/70 transition cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={recentTattooOrPiercing}
+                    onChange={(e) => setRecentTattooOrPiercing(e.target.checked)}
+                    className="mt-0.5 h-4 w-4 rounded border-slate-300 text-teal-600 focus:ring-teal-500"
+                  />
+                  <div>
+                    <span className="font-semibold text-slate-900 block">Recent tattooing or body piercing (Past 6–12 Months)</span>
+                    <span className="text-[11px] text-slate-500">Standard infectious disease window period precaution per national blood guidelines.</span>
+                  </div>
+                </label>
+
+                {/* 10. Skin lesion */}
+                <label className="flex items-start gap-3 p-2.5 rounded-xl border border-slate-200 bg-slate-50/70 hover:bg-slate-100/70 transition cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={skinInfectionAtSite}
+                    onChange={(e) => setSkinInfectionAtSite(e.target.checked)}
+                    className="mt-0.5 h-4 w-4 rounded border-slate-300 text-teal-600 focus:ring-teal-500"
+                  />
+                  <div>
+                    <span className="font-semibold text-slate-900 block">Skin infection, wound, or lesion at the intended donation site</span>
+                    <span className="text-[11px] text-slate-500">The antecubital venipuncture site must be free of rash, sores, or active lesions.</span>
+                  </div>
+                </label>
               </div>
             </div>
 
-            {/* Age & Weight */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              <div>
-                <div className="flex items-center justify-between mb-1">
-                  <label className="text-xs font-semibold text-slate-700">Age (Years)</label>
-                  <span className="text-[10px] text-slate-400">Ref: 18–65</span>
-                </div>
-                <input
-                  type="number"
-                  min="16"
-                  max="85"
-                  required
-                  value={age}
-                  onChange={(e) => setAge(Number(e.target.value))}
-                  className="w-full text-xs font-medium text-slate-900 bg-slate-50 border border-slate-300 rounded-lg px-3 py-2 focus:bg-white focus:outline-none focus:ring-2 focus:ring-teal-500/20 focus:border-teal-600 transition"
-                />
+            {/* SECTION 3: Medical / Donation History */}
+            <div className="pt-4 border-t border-slate-100 space-y-3">
+              <div className="flex items-center justify-between">
+                <h2 className="text-sm font-bold text-slate-900 flex items-center gap-2">
+                  <span className="flex h-5 w-5 items-center justify-center rounded-full bg-teal-100 text-[11px] font-black text-teal-800">
+                    3
+                  </span>
+                  <span>Medical / Donation History</span>
+                </h2>
+                <span className="text-[11px] text-slate-400">Past experience &amp; context</span>
               </div>
 
-              <div>
-                <div className="flex items-center justify-between mb-1">
-                  <label className="text-xs font-semibold text-slate-700">Weight (kg)</label>
-                  <span className="text-[10px] text-slate-400">Min: 50 kg</span>
-                </div>
-                <input
-                  type="number"
-                  min="30"
-                  max="200"
-                  step="0.5"
-                  required
-                  value={weightKg}
-                  onChange={(e) => setWeightKg(Number(e.target.value))}
-                  className="w-full text-xs font-medium text-slate-900 bg-slate-50 border border-slate-300 rounded-lg px-3 py-2 focus:bg-white focus:outline-none focus:ring-2 focus:ring-teal-500/20 focus:border-teal-600 transition"
-                />
+              <div className="space-y-2 text-xs">
+                {/* 1. Previous fainting */}
+                <label className="flex items-start gap-3 p-2.5 rounded-xl border border-slate-200 bg-slate-50/70 hover:bg-slate-100/70 transition cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={previousFaintingOrReaction}
+                    onChange={(e) => setPreviousFaintingOrReaction(e.target.checked)}
+                    className="mt-0.5 h-4 w-4 rounded border-slate-300 text-teal-600 focus:ring-teal-500"
+                  />
+                  <div>
+                    <span className="font-semibold text-slate-900 block">Previous significant reaction or fainting during blood donation</span>
+                    <span className="text-[11px] text-slate-500">History of severe vasovagal syncope or dizziness requiring extra clinical hydration precautions.</span>
+                  </div>
+                </label>
+
+                {/* 2. Previous advice not to donate */}
+                <label className="flex items-start gap-3 p-2.5 rounded-xl border border-slate-200 bg-slate-50/70 hover:bg-slate-100/70 transition cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={previousAdviceNotToDonate}
+                    onChange={(e) => setPreviousAdviceNotToDonate(e.target.checked)}
+                    className="mt-0.5 h-4 w-4 rounded border-slate-300 text-teal-600 focus:ring-teal-500"
+                  />
+                  <div>
+                    <span className="font-semibold text-slate-900 block">Previous advice from a blood centre not to donate</span>
+                    <span className="text-[11px] text-slate-500">Previous temporary or permanent deferral notification issued by a medical officer.</span>
+                  </div>
+                </label>
+
+                {/* 3. Recent blood transfusion */}
+                <label className="flex items-start gap-3 p-2.5 rounded-xl border border-slate-200 bg-slate-50/70 hover:bg-slate-100/70 transition cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={recentBloodTransfusion}
+                    onChange={(e) => setRecentBloodTransfusion(e.target.checked)}
+                    className="mt-0.5 h-4 w-4 rounded border-slate-300 text-teal-600 focus:ring-teal-500"
+                  />
+                  <div>
+                    <span className="font-semibold text-slate-900 block">Recent blood or blood product transfusion</span>
+                    <span className="text-[11px] text-slate-500">Receipt of whole blood, plasma, or platelets in the past 6–12 months.</span>
+                  </div>
+                </label>
+
+                {/* 4. Known medical condition */}
+                <label className="flex items-start gap-3 p-2.5 rounded-xl border border-slate-200 bg-slate-50/70 hover:bg-slate-100/70 transition cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={knownMedicalCondition}
+                    onChange={(e) => setKnownMedicalCondition(e.target.checked)}
+                    className="mt-0.5 h-4 w-4 rounded border-slate-300 text-teal-600 focus:ring-teal-500"
+                  />
+                  <div>
+                    <span className="font-semibold text-slate-900 block">Known or current medical condition that may affect donation safety</span>
+                    <span className="text-[11px] text-slate-500">Cardiovascular, chronic respiratory, bleeding disorders, or other ongoing medical supervision.</span>
+                  </div>
+                </label>
+
+                {/* 5. Pregnancy / breastfeeding */}
+                <label className="flex items-start gap-3 p-2.5 rounded-xl border border-slate-200 bg-slate-50/70 hover:bg-slate-100/70 transition cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={pregnancyOrBreastfeeding}
+                    onChange={(e) => setPregnancyOrBreastfeeding(e.target.checked)}
+                    className="mt-0.5 h-4 w-4 rounded border-slate-300 text-teal-600 focus:ring-teal-500"
+                  />
+                  <div>
+                    <span className="font-semibold text-slate-900 block">Pregnancy, recent pregnancy, or breastfeeding (where applicable)</span>
+                    <span className="text-[11px] text-slate-500">Deferred during active pregnancy and for standard post-partum/lactation recovery intervals.</span>
+                  </div>
+                </label>
+
+                {/* 6. Other health concerns */}
+                <label className="flex items-start gap-3 p-2.5 rounded-xl border border-slate-200 bg-slate-50/70 hover:bg-slate-100/70 transition cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={otherHealthConcerns}
+                    onChange={(e) => setOtherHealthConcerns(e.target.checked)}
+                    className="mt-0.5 h-4 w-4 rounded border-slate-300 text-teal-600 focus:ring-teal-500"
+                  />
+                  <div>
+                    <span className="font-semibold text-slate-900 block">Any other relevant health concern to discuss with blood-centre staff</span>
+                    <span className="text-[11px] text-slate-500">Any symptoms, unlisted medications, or queries you wish to bring to the transfusion officer.</span>
+                  </div>
+                </label>
               </div>
             </div>
 
-            {/* Hemoglobin & Interval */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              <div>
-                <div className="flex items-center justify-between mb-1">
-                  <label className="text-xs font-semibold text-slate-700">Hemoglobin (g/dL)</label>
-                  <span className="text-[10px] text-slate-400">Min: 12.5–13.0</span>
-                </div>
-                <input
-                  type="number"
-                  min="8"
-                  max="20"
-                  step="0.1"
-                  required
-                  value={hemoglobin}
-                  onChange={(e) => setHemoglobin(Number(e.target.value))}
-                  className="w-full text-xs font-medium text-slate-900 bg-slate-50 border border-slate-300 rounded-lg px-3 py-2 focus:bg-white focus:outline-none focus:ring-2 focus:ring-teal-500/20 focus:border-teal-600 transition"
-                />
+            {/* SECTION 4: Self-Deferral */}
+            <div className="pt-4 border-t border-slate-100 space-y-3">
+              <div className="flex items-center justify-between">
+                <h2 className="text-sm font-bold text-slate-900 flex items-center gap-2">
+                  <span className="flex h-5 w-5 items-center justify-center rounded-full bg-teal-100 text-[11px] font-black text-teal-800">
+                    4
+                  </span>
+                  <span>Self-Deferral</span>
+                </h2>
+                <span className="text-[10px] text-indigo-700 bg-indigo-50 border border-indigo-200 px-2 py-0.5 rounded-full font-medium">
+                  Voluntary &amp; Confidential
+                </span>
               </div>
 
-              <div>
-                <div className="flex items-center justify-between mb-1">
-                  <label className="text-xs font-semibold text-slate-700">Last Donated (Months)</label>
-                  <span className="text-[10px] text-slate-400">Min: ≥3 mo</span>
-                </div>
-                <input
-                  type="number"
-                  min="0"
-                  max="60"
-                  value={lastDonatedMonths}
-                  onChange={(e) => setLastDonatedMonths(e.target.value === '' ? '' : Number(e.target.value))}
-                  placeholder="Leave empty if first-time"
-                  className="w-full text-xs font-medium text-slate-900 bg-slate-50 border border-slate-300 rounded-lg px-3 py-2 focus:bg-white focus:outline-none focus:ring-2 focus:ring-teal-500/20 focus:border-teal-600 transition"
-                />
-              </div>
-            </div>
-
-            {/* Medication & Infection Toggles */}
-            <div className="space-y-3 pt-1">
-              <label className="flex items-start gap-3 p-3 rounded-xl border border-slate-200 bg-slate-50 hover:bg-slate-100/70 transition cursor-pointer">
+              <label className="flex items-start gap-3 p-3.5 rounded-xl border border-indigo-200 bg-indigo-50/60 hover:bg-indigo-50 transition cursor-pointer">
                 <input
                   type="checkbox"
-                  checked={recentMedicationAspirin}
-                  onChange={(e) => setRecentMedicationAspirin(e.target.checked)}
-                  className="mt-0.5 h-4 w-4 rounded border-slate-300 text-teal-600 focus:ring-teal-500"
+                  checked={selfDeferral}
+                  onChange={(e) => setSelfDeferral(e.target.checked)}
+                  className="mt-0.5 h-4 w-4 rounded border-indigo-300 text-indigo-600 focus:ring-indigo-500"
                 />
-                <div className="text-xs text-slate-700">
-                  <span className="font-semibold block text-slate-900">Recent Aspirin / NSAID Intake (Past 48 Hours)</span>
-                  <span className="text-slate-500 text-[11px] leading-relaxed">
-                    Temporarily inhibits platelet aggregation. May require 48-hour platelet deferral (whole blood donation remains acceptable).
+                <div className="text-xs text-indigo-950 space-y-1">
+                  <span className="font-bold block text-sm text-indigo-900">
+                    I am unsure whether I should donate today
                   </span>
+                  <p className="text-[11px] text-indigo-800/90 leading-relaxed">
+                    You can choose to self-defer and discuss your situation privately with qualified blood-centre staff. This choice is confidential and supported without any penalty.
+                  </p>
                 </div>
               </label>
+            </div>
 
-              <label className="flex items-start gap-3 p-3 rounded-xl border border-slate-200 bg-slate-50 hover:bg-slate-100/70 transition cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={recentFeverInfection}
-                  onChange={(e) => setRecentFeverInfection(e.target.checked)}
-                  className="mt-0.5 h-4 w-4 rounded border-slate-300 text-teal-600 focus:ring-teal-500"
-                />
-                <div className="text-xs text-slate-700">
-                  <span className="font-semibold block text-slate-900">Recent Fever, Cough, or Acute Infection (Past 14 Days)</span>
-                  <span className="text-slate-500 text-[11px] leading-relaxed">
-                    Donors must be fully symptom-free from febrile illnesses or active systemic infections for at least 14 days before donation.
+            {/* SECTION 5: Consent & Privacy (TWO SEPARATE CONCEPTS) */}
+            <div id="section-consent-privacy" className="pt-4 border-t border-slate-100 space-y-4">
+              <div className="flex items-center justify-between">
+                <h2 className="text-sm font-bold text-slate-900 flex items-center gap-2">
+                  <span className="flex h-5 w-5 items-center justify-center rounded-full bg-teal-100 text-[11px] font-black text-teal-800">
+                    5
                   </span>
+                  <span>Consent &amp; Privacy</span>
+                </h2>
+                <span className="text-[10px] font-bold text-rose-700 bg-rose-50 border border-rose-200 px-2 py-0.5 rounded-full uppercase">
+                  Required Action
+                </span>
+              </div>
+
+              {/* Validation Alert */}
+              {consentValidationError && (
+                <div className="p-3 rounded-xl bg-amber-50 border border-amber-200 text-amber-900 text-xs flex items-start gap-2.5 animate-in fade-in">
+                  <AlertTriangle className="h-4 w-4 text-amber-600 shrink-0 mt-0.5" />
+                  <span className="font-semibold">{consentValidationError}</span>
                 </div>
-              </label>
+              )}
+
+              {/* Area A: Preliminary Screening Acknowledgement */}
+              <div className="p-4 rounded-xl border border-slate-200 bg-slate-50/80 space-y-2.5">
+                <div className="flex items-center gap-2">
+                  <FileText className="h-4 w-4 text-teal-700" />
+                  <h3 className="text-xs font-bold text-slate-900 uppercase tracking-wider">
+                    A) Preliminary Screening Acknowledgement
+                  </h3>
+                </div>
+
+                <label className="flex items-start gap-3 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={screeningAcknowledgement}
+                    onChange={(e) => {
+                      setScreeningAcknowledgement(e.target.checked);
+                      if (e.target.checked && privacyConsent) setConsentValidationError(null);
+                    }}
+                    className="mt-0.5 h-4 w-4 rounded border-slate-300 text-teal-600 focus:ring-teal-500"
+                  />
+                  <div className="text-xs text-slate-700 space-y-1">
+                    <span className="font-semibold block text-slate-900">
+                      I confirm that the information I have provided in this screening form is accurate and complete to the best of my knowledge. I understand that this questionnaire is only a preliminary screening aid and that final eligibility to donate blood will be determined by qualified blood-centre staff.
+                    </span>
+                    <p className="text-[11px] text-slate-500 leading-relaxed">
+                      I understand that I may ask questions and may choose not to proceed with donation.
+                    </p>
+                    <p className="text-[10px] text-slate-400 italic">
+                      Note: This acknowledgement is for preliminary digital screening only and does not replace the formal in-person informed consent administered at the blood bank.
+                    </p>
+                  </div>
+                </label>
+              </div>
+
+              {/* Area B: Personal Data / Privacy Consent */}
+              <div className="p-4 rounded-xl border border-slate-200 bg-slate-50/80 space-y-2.5">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <Lock className="h-4 w-4 text-teal-700" />
+                    <h3 className="text-xs font-bold text-slate-900 uppercase tracking-wider">
+                      B) Personal Data / Privacy Consent
+                    </h3>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setIsPrivacyModalOpen(true)}
+                    className="inline-flex items-center gap-1 text-[11px] font-bold text-teal-700 hover:text-teal-800 hover:underline transition cursor-pointer"
+                  >
+                    <span>View Privacy Notice</span>
+                    <ExternalLink className="h-3 w-3" />
+                  </button>
+                </div>
+
+                <label className="flex items-start gap-3 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={privacyConsent}
+                    onChange={(e) => {
+                      setPrivacyConsent(e.target.checked);
+                      if (e.target.checked && screeningAcknowledgement) setConsentValidationError(null);
+                    }}
+                    className="mt-0.5 h-4 w-4 rounded border-slate-300 text-teal-600 focus:ring-teal-500"
+                  />
+                  <div className="text-xs text-slate-700 space-y-1">
+                    <span className="font-semibold block text-slate-900">
+                      I consent to Dofi processing the personal information I provide for the specific purposes explained in the Dofi Privacy Notice, including donor coordination and operation of the blood-donation platform.
+                    </span>
+                    <p className="text-[11px] text-slate-500 leading-relaxed">
+                      I understand that my personal information will be handled according to the Dofi Privacy Notice and applicable law.
+                    </p>
+                  </div>
+                </label>
+              </div>
             </div>
 
             {/* Error Banner */}
@@ -462,11 +919,11 @@ export const DonorAIToolsView: React.FC = () => {
               </div>
             )}
 
-            {/* Submit Button */}
+            {/* SECTION 7: Submit Button */}
             <button
               type="submit"
               disabled={isLoading}
-              className="w-full flex items-center justify-center gap-2 px-4 py-3 rounded-xl bg-teal-600 hover:bg-teal-700 active:bg-teal-800 text-white font-bold text-xs shadow-sm hover:shadow transition disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
+              className="w-full flex items-center justify-center gap-2 px-4 py-3.5 rounded-xl bg-teal-600 hover:bg-teal-700 active:bg-teal-800 text-white font-bold text-xs shadow-sm hover:shadow transition disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
             >
               {isLoading ? (
                 <>
@@ -482,7 +939,7 @@ export const DonorAIToolsView: React.FC = () => {
             </button>
           </form>
 
-          {/* Configurable Demonstration Policy Reference Card */}
+          {/* Demonstration Policy Reference Card */}
           <div className="bg-slate-50 rounded-2xl border border-slate-200 p-5 space-y-3">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
@@ -534,8 +991,8 @@ export const DonorAIToolsView: React.FC = () => {
           </div>
         </div>
 
-        {/* RIGHT COLUMN: Screening Report & Downloadable Artifact (7 cols on lg) */}
-        <div className="lg:col-span-7 space-y-6">
+        {/* RIGHT COLUMN: Screening Report & Downloadable Artifact (6 cols on lg) */}
+        <div className="lg:col-span-6 space-y-6">
           {/* State 1: Loading Skeleton */}
           {isLoading && (
             <div className="bg-white rounded-2xl border border-slate-200 p-8 shadow-xs space-y-6 animate-pulse">
@@ -568,7 +1025,7 @@ export const DonorAIToolsView: React.FC = () => {
                   Ready for AI Clinical Pre-Screening
                 </h3>
                 <p className="text-xs text-slate-500 leading-relaxed">
-                  Fill in your clinical parameters on the left or select a quick test scenario to evaluate donation fitness under standard blood banking references.
+                  Fill in your parameters and health history on the left, confirm the required screening &amp; privacy acknowledgements, and generate your report.
                 </p>
               </div>
 
@@ -576,10 +1033,10 @@ export const DonorAIToolsView: React.FC = () => {
                 <div className="p-3.5 rounded-xl border border-slate-200 bg-slate-50 space-y-1">
                   <div className="font-bold text-xs text-slate-800 flex items-center gap-1.5">
                     <CheckCircle2 className="h-3.5 w-3.5 text-teal-600" />
-                    <span>6 Clinical Checks</span>
+                    <span>Comprehensive Checks</span>
                   </div>
                   <p className="text-[11px] text-slate-500">
-                    Age, weight, hemoglobin, donation rest interval, NSAID/aspirin, and active symptoms.
+                    Health history, medications, procedures, and self-deferral.
                   </p>
                 </div>
 
@@ -589,17 +1046,17 @@ export const DonorAIToolsView: React.FC = () => {
                     <span>Vector A4 PDF</span>
                   </div>
                   <p className="text-[11px] text-slate-500">
-                    Clean printable and downloadable report ready to take directly to the hospital blood bank.
+                    Formatted multi-page report ready to print or present to transfusion staff.
                   </p>
                 </div>
 
                 <div className="p-3.5 rounded-xl border border-slate-200 bg-slate-50 space-y-1">
                   <div className="font-bold text-xs text-slate-800 flex items-center gap-1.5">
-                    <ShieldAlert className="h-3.5 w-3.5 text-rose-600" />
-                    <span>Safety Guaranteed</span>
+                    <ShieldCheck className="h-3.5 w-3.5 text-teal-600" />
+                    <span>Consent &amp; Privacy</span>
                   </div>
                   <p className="text-[11px] text-slate-500">
-                    Transparent triage and zero claims of final medical clearance.
+                    Clear separation of medical screening acknowledgement and data consent.
                   </p>
                 </div>
               </div>
@@ -614,7 +1071,7 @@ export const DonorAIToolsView: React.FC = () => {
                 <div>
                   <div className="flex items-center gap-2">
                     <span className="font-black text-slate-900 tracking-tight text-lg">DOFI</span>
-                    <span className="text-xs text-slate-500 font-medium">| Clinical Screening Report</span>
+                    <span className="text-xs text-slate-500 font-medium">| Pre-Screening Assessment</span>
                   </div>
                   <div className="flex items-center gap-3 text-[11px] text-slate-500 mt-1">
                     <span>ID: <code className="font-mono text-slate-700 font-bold">{screeningResult.reportId}</code></span>
@@ -628,19 +1085,19 @@ export const DonorAIToolsView: React.FC = () => {
                   {screeningResult.status === 'eligible_for_review' && (
                     <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold bg-emerald-50 text-emerald-800 border border-emerald-200 shadow-2xs">
                       <CheckCircle2 className="h-4 w-4 text-emerald-600" />
-                      <span>Eligible for Review</span>
+                      <span>{screeningResult.statusLabel || 'Preliminary Screening: No Immediate Flag'}</span>
                     </span>
                   )}
                   {screeningResult.status === 'temporarily_deferred' && (
                     <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold bg-amber-50 text-amber-800 border border-amber-200 shadow-2xs">
                       <Clock className="h-4 w-4 text-amber-600" />
-                      <span>Temporarily Deferred</span>
+                      <span>{screeningResult.statusLabel || 'Preliminary Screening: Potential Temporary Deferral'}</span>
                     </span>
                   )}
                   {screeningResult.status === 'needs_manual_review' && (
                     <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold bg-indigo-50 text-indigo-800 border border-indigo-200 shadow-2xs">
                       <AlertTriangle className="h-4 w-4 text-indigo-600" />
-                      <span>Needs Manual Review</span>
+                      <span>{screeningResult.statusLabel || 'Preliminary Screening: Needs Manual Review'}</span>
                     </span>
                   )}
                 </div>
@@ -666,7 +1123,20 @@ export const DonorAIToolsView: React.FC = () => {
                 </div>
               </div>
 
-              {/* Status Banner Explanation */}
+              {/* Consent & Acknowledgement Confirmation Strip */}
+              <div className="p-3 rounded-xl bg-teal-50/70 border border-teal-200/80 text-[11px] text-teal-900 flex items-center justify-between gap-2">
+                <div className="flex items-center gap-2">
+                  <ShieldCheck className="h-4 w-4 text-teal-600 shrink-0" />
+                  <span>
+                    <strong>Consent &amp; Acknowledgements:</strong> Preliminary Screening Acknowledged [✓] • Privacy Consent [✓]
+                  </span>
+                </div>
+                <span className="text-[10px] font-bold uppercase bg-teal-100 text-teal-800 px-2 py-0.5 rounded">
+                  Confirmed
+                </span>
+              </div>
+
+              {/* Status Explanation Banner */}
               <div
                 className={`p-4 rounded-xl border text-xs leading-relaxed ${
                   screeningResult.status === 'eligible_for_review'
@@ -679,24 +1149,24 @@ export const DonorAIToolsView: React.FC = () => {
                 <div className="font-bold text-sm mb-1">
                   {screeningResult.statusLabel || (
                     screeningResult.status === 'eligible_for_review'
-                      ? 'Preliminary Criteria Satisfied'
+                      ? 'Preliminary Screening: No Immediate Flag'
                       : screeningResult.status === 'temporarily_deferred'
-                      ? 'Temporary Deferral Recommended'
-                      : 'Clinical Evaluation Recommended'
+                      ? 'Preliminary Screening: Potential Temporary Deferral'
+                      : 'Preliminary Screening: Needs Manual Review'
                   )}
                 </div>
                 <p>{screeningResult.summary}</p>
               </div>
 
-              {/* Parameter Evaluation Table */}
+              {/* Evaluated Parameters Breakdown Table */}
               <div className="space-y-2.5">
                 <h4 className="text-xs font-bold text-slate-800 uppercase tracking-wider">
-                  Evaluated Parameters Breakdown
+                  Evaluated Screening Breakdown ({screeningResult.parameters?.length || 0} checks)
                 </h4>
                 <div className="border border-slate-200 rounded-xl overflow-hidden divide-y divide-slate-100">
                   {(screeningResult.parameters || []).map((param, idx) => (
                     <div key={idx} className="p-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-2 hover:bg-slate-50/80 transition">
-                      <div className="space-y-0.5 sm:max-w-[60%]">
+                      <div className="space-y-0.5 sm:max-w-[62%]">
                         <div className="flex items-center gap-2">
                           <span className="font-bold text-xs text-slate-900">{param.name}</span>
                           <span className="text-[11px] font-mono text-slate-500 bg-slate-100 px-1.5 py-0.2 rounded">

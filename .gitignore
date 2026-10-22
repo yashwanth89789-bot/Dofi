@@ -6,3 +6,4 @@ coverage/
 *.log
 .env*
 !.env.example
+DonorConnect_4Care_Title_and_Abstract_Updated.pdf
