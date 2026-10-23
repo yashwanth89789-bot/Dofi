@@ -159,7 +159,7 @@ export const AIEmergencyDispatchView: React.FC = () => {
 
         <div className="flex items-center justify-between pt-4 border-t border-slate-100">
           <span className="text-xs text-slate-500">
-            Cross-checks real-time inventory at accredited hospital repositories.
+            Verifies real-time inventory at accredited hospital repositories.
           </span>
           <button
             onClick={handleRunDispatch}

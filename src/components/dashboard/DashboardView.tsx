@@ -1,189 +1,136 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import {
   Users,
   Activity,
   AlertCircle,
   Building,
   Heart,
-  Search,
   PlusCircle,
-  CheckCircle,
   ShieldCheck,
   ChevronRight,
   MapPin,
   Clock,
-  Sparkles,
-  Dna,
-  Eye,
-  Globe2,
-  BrainCircuit,
-  ArrowRight,
+  Droplet,
   ArrowUp,
-  Radio,
-  Layers
+  Radio
 } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
 import { DeadlinesWidget } from './DeadlinesWidget';
-import { CategoryPillars } from './CategoryPillars';
-import { DonationImpactCharts } from './DonationImpactCharts';
-import { PatientSuccessStories } from '../stories/PatientSuccessStories';
-import { HERO_IMAGE } from '../../data/mockData';
-import { DonationCategory } from '../../types';
+import { ExternalStatsWidget } from './ExternalStatsWidget';
+
+// Keywords that identify non-blood orgs; used to filter the hospital grid
+const NON_BLOOD_ORG_KEYWORDS = [
+  'organ', 'transplant', 'bone', 'tissue', 'hair', 'cranial', 'prosthetic',
+  'oncology', 'cancer', 'marrow', 'nmdp', 'histocompatibility'
+];
+
+function isBloodRelevantOrg(name: string): boolean {
+  const lower = name.toLowerCase();
+  return !NON_BLOOD_ORG_KEYWORDS.some(kw => lower.includes(kw));
+}
 
 export const DashboardView: React.FC = () => {
   const {
-    impactStats,
     requests,
     donors,
+    organizations,
     setSelectedRequest,
     setSelectedDonor,
     setActiveTab,
     setIsCreateRequestModalOpen,
     setIsRegisterDonorModalOpen,
-    openAiModule
+    liveRegisteredDonors,
+    liveActiveRequests,
+    donorResponses,
+    respondToRequest,
+    currentUser,
+    firebaseUser
   } = useApp();
 
-  const [activeListTab, setActiveListTab] = useState<'requests' | 'donors'>('requests');
   const [showScrollTop, setShowScrollTop] = useState(false);
-  const [scrollProgress, setScrollProgress] = useState(0);
-  const [activeSection, setActiveSection] = useState('section-hero');
+  const [respondingReqId, setRespondingReqId] = useState<string | null>(null);
 
-  useEffect(() => {
-    const handleScroll = () => {
-      const totalScroll = document.documentElement.scrollHeight - window.innerHeight;
-      const currentScroll = window.scrollY;
-      setShowScrollTop(currentScroll > 250);
-      if (totalScroll > 0) {
-        setScrollProgress((currentScroll / totalScroll) * 100);
-      }
-
-      // Track active section for scroller tabs
-      const sectionIds = [
-        'section-hero',
-        'section-stats',
-        'section-ai-lab',
-        'section-deadlines',
-        'section-impact',
-        'section-pillars',
-        'section-stories',
-        'section-feed'
-      ];
-
-      for (let i = sectionIds.length - 1; i >= 0; i--) {
-        const el = document.getElementById(sectionIds[i]);
-        if (el) {
-          const rect = el.getBoundingClientRect();
-          if (rect.top <= 200) {
-            setActiveSection(sectionIds[i]);
-            break;
-          }
-        }
-      }
-    };
-
+  React.useEffect(() => {
+    const handleScroll = () => setShowScrollTop(window.scrollY > 300);
     window.addEventListener('scroll', handleScroll, { passive: true });
     return () => window.removeEventListener('scroll', handleScroll);
   }, []);
 
-  const scrollToSection = (id: string) => {
-    const el = document.getElementById(id);
-    if (el) {
-      el.scrollIntoView({ behavior: 'smooth', block: 'start' });
-    }
-  };
+  // ── Derived lists — stats are computed from the SAME arrays shown on screen ──
+  const bloodRequests = requests
+    .filter(r => r.category === 'blood' && r.status !== 'completed' && r.status !== 'cancelled')
+    // deduplicate by id
+    .filter((r, idx, arr) => arr.findIndex(x => x.id === r.id) === idx)
+    .sort((a, b) => {
+      const order: Record<string, number> = { emergency: 0, urgent: 1, standard: 2 };
+      return (order[a.urgency] ?? 2) - (order[b.urgency] ?? 2);
+    });
+
+  const availableBloodDonors = donors.filter(
+    d => d.categories.includes('blood') &&
+      (d.availabilityStatus === 'available_now' || d.availabilityStatus === 'available_24h')
+  );
+
+  const bloodEmergencies = bloodRequests.filter(r => r.urgency === 'emergency');
+
+  const bloodRelevantOrgs = organizations.filter(o => o.isVerified && isBloodRelevantOrg(o.name));
+
+  // Live strip: show if any mock or Firestore data exists
+  const hasLiveActivity = liveActiveRequests > 0 || liveRegisteredDonors > 0 || bloodRequests.length > 0;
 
   return (
     <div className="space-y-6 max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 scroll-smooth relative">
-      {/* 1. Live Urgent Requisitions Auto-Scroller Strip */}
+
+      {/* Live Activity Strip */}
       <div className="bg-slate-900 text-white rounded-xl p-2.5 border border-slate-800 shadow-xs flex items-center gap-3 overflow-hidden">
-        <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-rose-600 text-white font-bold text-[10px] uppercase tracking-wider shrink-0 shadow-xs">
+        <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-teal-700 text-white font-bold text-[10px] uppercase tracking-wider shrink-0">
           <Radio className="h-3 w-3 animate-ping" />
-          <span>Live Scroller</span>
+          <span>Live</span>
         </div>
         <div className="overflow-x-auto scrollbar-none flex items-center gap-6 text-xs whitespace-nowrap py-0.5">
-          {requests.map(req => (
-            <button
-              key={req.id}
-              onClick={() => setSelectedRequest(req)}
-              className="flex items-center gap-2 text-slate-300 hover:text-white transition-colors cursor-pointer shrink-0"
-            >
-              <span className="h-1.5 w-1.5 rounded-full bg-teal-400" />
-              <span className="font-semibold text-white">{req.title}</span>
-              <span className="text-[10px] text-slate-400 font-mono">({req.hospitalName})</span>
-              <span className="text-[10px] bg-teal-950 text-teal-300 border border-teal-800 px-1.5 py-0.2 rounded font-bold uppercase">
-                {req.category}
-              </span>
-            </button>
-          ))}
+          {!hasLiveActivity ? (
+            <span className="text-slate-400 italic text-[11px]">
+              No live activity yet — sign in and create a blood request to get started
+            </span>
+          ) : (
+            <>
+              {bloodRequests.length > 0 && (
+                <span className="flex items-center gap-2 text-slate-300 shrink-0">
+                  <span className="h-1.5 w-1.5 rounded-full bg-rose-400" />
+                  <span className="font-semibold text-white">{bloodRequests.length} blood request{bloodRequests.length !== 1 ? 's' : ''}</span>
+                </span>
+              )}
+              {availableBloodDonors.length > 0 && (
+                <span className="flex items-center gap-2 text-slate-300 shrink-0">
+                  <span className="h-1.5 w-1.5 rounded-full bg-sky-400" />
+                  <span className="font-semibold text-white">{availableBloodDonors.length} donor{availableBloodDonors.length !== 1 ? 's' : ''} available</span>
+                </span>
+              )}
+              {bloodEmergencies.length > 0 && (
+                <span className="flex items-center gap-2 text-slate-300 shrink-0">
+                  <span className="h-1.5 w-1.5 rounded-full bg-rose-400 animate-pulse" />
+                  <span className="font-semibold text-rose-300">{bloodEmergencies.length} emergency{bloodEmergencies.length !== 1 ? 's' : ''}</span>
+                </span>
+              )}
+            </>
+          )}
         </div>
       </div>
 
-      {/* 2. Interactive Sticky Section Scroller Bar */}
-      <nav aria-label="Section scroller" className="sticky top-16 z-30 bg-white/95 backdrop-blur-md py-2 px-3 sm:px-4 rounded-xl border border-slate-200 shadow-sm flex items-center justify-between gap-2 sm:gap-3 transition-all">
-        <div className="flex items-center gap-2 text-xs font-bold text-slate-700 shrink-0">
-          <Layers className="h-3.5 w-3.5 text-teal-600" />
-          <span className="uppercase tracking-wider text-[11px] text-slate-600 font-bold hidden sm:inline">Scroller:</span>
-        </div>
-        
-        <div className="flex items-center gap-1 sm:gap-1.5 overflow-x-auto scrollbar-none py-0.5 text-xs font-semibold">
-          {[
-            { id: 'section-hero', label: 'Overview', icon: '⚡' },
-            { id: 'section-stats', label: 'Metrics', icon: '📊' },
-            { id: 'section-ai-lab', label: 'AI Lab', icon: '🧠' },
-            { id: 'section-deadlines', label: 'STAT Queue', icon: '⏱️' },
-            { id: 'section-impact', label: 'Impact', icon: '📈' },
-            { id: 'section-pillars', label: '4 Programs', icon: '🧬' },
-            { id: 'section-stories', label: 'Stories', icon: '❤️' },
-            { id: 'section-feed', label: 'Live Feed', icon: '📋' },
-          ].map(item => (
-            <button
-              key={item.id}
-              onClick={() => scrollToSection(item.id)}
-              className={`px-2.5 sm:px-3 py-1.5 rounded-lg whitespace-nowrap transition-all flex items-center gap-1.5 cursor-pointer text-xs ${
-                activeSection === item.id
-                  ? 'bg-teal-600 text-white font-bold shadow-xs'
-                  : 'bg-slate-100 hover:bg-slate-200 text-slate-700 hover:text-slate-900'
-              }`}
-            >
-              <span>{item.icon}</span>
-              <span>{item.label}</span>
-            </button>
-          ))}
-        </div>
-        
-        <button
-          onClick={() => window.scrollTo({ top: 0, behavior: 'smooth' })}
-          className="shrink-0 p-1.5 rounded-lg text-slate-500 hover:text-slate-900 hover:bg-slate-100 transition-colors cursor-pointer"
-          title="Scroll to Top"
-        >
-          <ArrowUp className="h-4 w-4" />
-        </button>
-      </nav>
-
       {/* Hero Section */}
-      <section id="section-hero" className="relative rounded-2xl overflow-hidden bg-slate-900 border border-slate-800 text-white shadow-xl">
-        <div className="absolute inset-0 z-0">
-          <img
-            src={HERO_IMAGE}
-            alt="Hospital transplant and clinical donor matching coordination center"
-            className="w-full h-full object-cover opacity-25"
-            referrerPolicy="no-referrer"
-          />
-          <div className="absolute inset-0 bg-gradient-to-r from-slate-950 via-slate-900/90 to-slate-900/70" />
-        </div>
-
-        <div className="relative z-10 p-6 sm:p-10 max-w-3xl space-y-4">
-          <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-teal-500/20 border border-teal-500/30 text-teal-300 text-xs font-semibold uppercase tracking-wider">
-            <ShieldCheck className="h-3.5 w-3.5" />
-            <span>Certified Healthcare Intermediary Network</span>
+      <section className="rounded-2xl bg-slate-900 border border-slate-800 text-white shadow-lg">
+        <div className="p-6 sm:p-10 max-w-3xl space-y-4">
+          <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-rose-500/20 border border-rose-500/30 text-rose-300 text-xs font-semibold uppercase tracking-wider">
+            <Droplet className="h-3.5 w-3.5" />
+            <span>Blood Donation Coordination · Prototype</span>
           </div>
 
           <h1 className="text-2xl sm:text-4xl font-extrabold tracking-tight text-white leading-tight">
-            Connecting Lifesaving Donors with Verified Patients & Hospitals
+            Connecting Blood Donors with Patients &amp; Hospitals
           </h1>
 
           <p className="text-sm sm:text-base text-slate-300 leading-relaxed max-w-2xl">
-            A secure 4-in-1 platform integrating <strong className="text-white">Blood</strong>, <strong className="text-white">Organ</strong>, <strong className="text-white">Bone & Tissue</strong>, and <strong className="text-white">Hair</strong> donation under strict clinical ethics and anti-trafficking protocols.
+            Find verified blood requests and connect eligible donors with hospitals when blood is urgently needed.
           </p>
 
           <div className="flex flex-wrap items-center gap-3 pt-2">
@@ -192,373 +139,316 @@ export const DashboardView: React.FC = () => {
               className="px-5 py-2.5 rounded-lg bg-teal-500 hover:bg-teal-600 text-slate-950 font-bold text-xs tracking-wide transition-colors shadow-sm inline-flex items-center gap-2 cursor-pointer"
             >
               <PlusCircle className="h-4 w-4" />
-              <span>Create Request</span>
+              <span>Create Blood Request</span>
             </button>
             <button
               onClick={() => setIsRegisterDonorModalOpen(true)}
-              className="px-5 py-2.5 rounded-lg bg-white/10 hover:bg-white/20 border border-white/20 text-white font-semibold text-xs tracking-wide transition-colors inline-flex items-center gap-2 backdrop-blur-xs"
+              className="px-5 py-2.5 rounded-lg bg-white/10 hover:bg-white/20 border border-white/20 text-white font-semibold text-xs tracking-wide transition-colors inline-flex items-center gap-2"
             >
               <Heart className="h-4 w-4 text-rose-400" />
-              <span>Register to Donate</span>
+              <span>Register as Donor</span>
             </button>
             <button
               onClick={() => setActiveTab('find-donors')}
               className="px-4 py-2.5 text-xs text-slate-300 hover:text-white transition-colors inline-flex items-center gap-1 cursor-pointer"
             >
-              <span>Explore Donors Near You</span>
+              <span>Find Donors</span>
               <ChevronRight className="h-4 w-4" />
-            </button>
-            <button
-              onClick={() => {
-                const storiesEl = document.getElementById('patient-success-stories');
-                if (storiesEl) storiesEl.scrollIntoView({ behavior: 'smooth' });
-              }}
-              className="px-3.5 py-2.5 text-xs text-teal-300 hover:text-white transition-colors inline-flex items-center gap-1.5 cursor-pointer font-medium"
-            >
-              <Heart className="h-3.5 w-3.5 text-rose-400 fill-rose-400" />
-              <span>Recipient Stories</span>
             </button>
           </div>
         </div>
       </section>
 
-      {/* High-density Impact Stats Grid */}
-      <section id="section-stats" className="grid grid-cols-2 md:grid-cols-5 gap-3">
-        <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs">
+      {/* Stats Grid */}
+      <section className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        <div className="bg-white p-4 rounded-xl border border-rose-200 shadow-xs">
           <div className="flex items-center justify-between text-xs text-slate-500 mb-1">
-            <span>Active Requests</span>
-            <Activity className="h-4 w-4 text-teal-600" />
+            <span>Blood Requests</span>
+            <Droplet className="h-4 w-4 text-rose-600" />
           </div>
-          <div className="text-2xl font-bold text-slate-900 font-mono tabular-nums">
-            {impactStats.activeRequests}
-          </div>
-          <div className="text-[11px] text-slate-400 mt-1">Across 4 categories</div>
+          <div className="text-2xl font-bold text-slate-900 font-mono tabular-nums">{bloodRequests.length}</div>
+          <div className="text-[11px] text-rose-600 font-medium mt-1">Active</div>
         </div>
 
-        <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs">
+        <div className="bg-white p-4 rounded-xl border border-sky-200 shadow-xs">
           <div className="flex items-center justify-between text-xs text-slate-500 mb-1">
             <span>Available Donors</span>
             <Users className="h-4 w-4 text-sky-600" />
           </div>
-          <div className="text-2xl font-bold text-slate-900 font-mono tabular-nums">
-            {impactStats.availableDonors}
-          </div>
-          <div className="text-[11px] text-emerald-600 font-medium mt-1">Ready now / 24h</div>
+          <div className="text-2xl font-bold text-slate-900 font-mono tabular-nums">{availableBloodDonors.length}</div>
+          <div className="text-[11px] text-sky-600 font-medium mt-1">Blood donors ready</div>
         </div>
 
-        <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs">
+        <div className="bg-white p-4 rounded-xl border border-rose-300 shadow-xs">
           <div className="flex items-center justify-between text-xs text-slate-500 mb-1">
-            <span>Emergency STAT</span>
+            <span>Emergencies</span>
             <AlertCircle className="h-4 w-4 text-rose-600" />
           </div>
-          <div className="text-2xl font-bold text-rose-600 font-mono tabular-nums">
-            {impactStats.criticalEmergencies}
-          </div>
-          <div className="text-[11px] text-rose-500 font-medium mt-1">Requires immediate triage</div>
+          <div className="text-2xl font-bold text-rose-600 font-mono tabular-nums">{bloodEmergencies.length}</div>
+          <div className="text-[11px] text-rose-500 font-medium mt-1">Urgent blood needed</div>
         </div>
 
         <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs">
           <div className="flex items-center justify-between text-xs text-slate-500 mb-1">
             <span>Verified Hospitals</span>
-            <Building className="h-4 w-4 text-indigo-600" />
+            <Building className="h-4 w-4 text-teal-600" />
           </div>
-          <div className="text-2xl font-bold text-slate-900 font-mono tabular-nums">
-            {impactStats.verifiedHospitals}
-          </div>
-          <div className="text-[11px] text-slate-400 mt-1">UNOS & FDA accredited</div>
-        </div>
-
-        <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs col-span-2 md:col-span-1">
-          <div className="flex items-center justify-between text-xs text-slate-500 mb-1">
-            <span>Lives Touched</span>
-            <Heart className="h-4 w-4 text-rose-500" />
-          </div>
-          <div className="text-2xl font-bold text-slate-900 font-mono tabular-nums">
-            {impactStats.livesTouchedCount}
-          </div>
-          <div className="text-[11px] text-slate-400 mt-1">100% voluntary & free</div>
+          <div className="text-2xl font-bold text-slate-900 font-mono tabular-nums">{bloodRelevantOrgs.length}</div>
+          <div className="text-[11px] text-teal-600 font-medium mt-1">Registered</div>
         </div>
       </section>
 
-      {/* AI & Machine Learning Intelligence Spotlight */}
-      <section id="section-ai-lab" className="bg-gradient-to-r from-slate-900 via-indigo-950 to-slate-900 rounded-2xl p-6 text-white border border-indigo-900/50 shadow-lg space-y-4">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+      {/* Urgent Blood Requests — most important section */}
+      <section className="bg-white rounded-xl border border-slate-200 shadow-xs overflow-hidden">
+        <div className="flex items-center justify-between px-5 py-4 border-b border-slate-100">
           <div className="flex items-center gap-2.5">
-            <div className="h-8 w-8 rounded-lg bg-teal-500 flex items-center justify-center text-slate-950">
-              <BrainCircuit className="h-5 w-5" />
+            <div className="h-7 w-7 rounded-lg bg-rose-100 text-rose-600 flex items-center justify-center">
+              <Droplet className="h-4 w-4" />
             </div>
             <div>
-              <div className="flex items-center gap-2">
-                <h3 className="font-extrabold text-base tracking-tight text-white">
-                  BioMatch AI & Machine Learning Lab
-                </h3>
-                <span className="px-2 py-0.5 rounded-full text-[9px] font-black uppercase tracking-wider bg-teal-400 text-slate-950">
-                  8 Engines
-                </span>
-              </div>
-              <p className="text-xs text-slate-300">
-                Calibrated survival inference, computer vision specimen inspection, and global cancer trial matching.
+              <h2 className="text-sm font-bold text-slate-900">Blood Requests</h2>
+              <p className="text-[11px] text-slate-400">
+                {bloodRequests.length > 0 ? `${bloodRequests.length} active request${bloodRequests.length !== 1 ? 's' : ''}` : 'No active blood requests'}
               </p>
             </div>
           </div>
-
           <button
-            onClick={() => setActiveTab('ai-suite')}
-            className="px-4 py-2 rounded-xl bg-white/10 hover:bg-white/20 text-white font-bold text-xs border border-white/20 transition flex items-center gap-1.5 self-start sm:self-auto cursor-pointer"
-          >
-            <span>Open All 8 AI Modules</span>
-            <ChevronRight className="h-3.5 w-3.5" />
-          </button>
-        </div>
-
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-3 pt-1">
-          {/* Spotlight 1: BioMatch ML */}
-          <div
-            onClick={() => openAiModule('biomatch_ml')}
-            className="p-4 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 transition-all cursor-pointer space-y-2 group"
-          >
-            <div className="flex items-center justify-between">
-              <div className="h-8 w-8 rounded-lg bg-teal-500/20 text-teal-300 flex items-center justify-center">
-                <Dna className="h-4 w-4" />
-              </div>
-              <span className="text-[10px] font-mono text-teal-300 font-bold bg-teal-950/80 px-2 py-0.5 rounded border border-teal-800">
-                C-Index 0.884
-              </span>
-            </div>
-            <div>
-              <div className="font-bold text-xs text-white group-hover:text-teal-300 transition-colors">
-                BioMatch ML™ Prognostics
-              </div>
-              <p className="text-[11px] text-slate-400 mt-0.5 line-clamp-2">
-                LightGBM ensemble simulating 5-year Kaplan-Meier survival curves and SHAP explainability.
-              </p>
-            </div>
-            <div className="text-[10px] text-teal-400 font-bold flex items-center gap-1 pt-1">
-              <span>Launch Simulator</span>
-              <ArrowRight className="h-3 w-3 group-hover:translate-x-0.5 transition-transform" />
-            </div>
-          </div>
-
-          {/* Spotlight 2: VisionLab */}
-          <div
-            onClick={() => openAiModule('vision_lab')}
-            className="p-4 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 transition-all cursor-pointer space-y-2 group"
-          >
-            <div className="flex items-center justify-between">
-              <div className="h-8 w-8 rounded-lg bg-indigo-500/20 text-indigo-300 flex items-center justify-center">
-                <Eye className="h-4 w-4" />
-              </div>
-              <span className="text-[10px] font-mono text-indigo-300 font-bold bg-indigo-950/80 px-2 py-0.5 rounded border border-indigo-800">
-                Vision AI
-              </span>
-            </div>
-            <div>
-              <div className="font-bold text-xs text-white group-hover:text-indigo-300 transition-colors">
-                VisionLab™ Specimen Scanner
-              </div>
-              <p className="text-[11px] text-slate-400 mt-0.5 line-clamp-2">
-                Computer vision measuring hair bundle length & cuticle integrity, blood tube volume, and cell viability.
-              </p>
-            </div>
-            <div className="text-[10px] text-indigo-400 font-bold flex items-center gap-1 pt-1">
-              <span>Inspect Specimen</span>
-              <ArrowRight className="h-3 w-3 group-hover:translate-x-0.5 transition-transform" />
-            </div>
-          </div>
-
-          {/* Spotlight 3: Global Cancer Trials */}
-          <div
-            onClick={() => openAiModule('oncology_trials')}
-            className="p-4 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 transition-all cursor-pointer space-y-2 group"
-          >
-            <div className="flex items-center justify-between">
-              <div className="h-8 w-8 rounded-lg bg-blue-500/20 text-blue-300 flex items-center justify-center">
-                <Globe2 className="h-4 w-4" />
-              </div>
-              <span className="text-[10px] font-mono text-blue-300 font-bold bg-blue-950/80 px-2 py-0.5 rounded border border-blue-800">
-                World Map Linked
-              </span>
-            </div>
-            <div>
-              <div className="font-bold text-xs text-white group-hover:text-blue-300 transition-colors">
-                Global Cancer Trial Matcher
-              </div>
-              <p className="text-[11px] text-slate-400 mt-0.5 line-clamp-2">
-                Match patient biomarkers with CAR-T and allograft trials at MD Anderson, MSKCC, and world hubs.
-              </p>
-            </div>
-            <div className="text-[10px] text-blue-400 font-bold flex items-center gap-1 pt-1">
-              <span>Match Protocols</span>
-              <ArrowRight className="h-3 w-3 group-hover:translate-x-0.5 transition-transform" />
-            </div>
-          </div>
-        </div>
-      </section>
-
-      {/* Deadlines & Urgency Queue Widget */}
-      <div id="section-deadlines">
-        <DeadlinesWidget />
-      </div>
-
-      {/* Recharts Donation Impact Metrics */}
-      <div id="section-impact">
-        <DonationImpactCharts />
-      </div>
-
-      {/* 4-in-1 Category Pillars */}
-      <div id="section-pillars">
-        <CategoryPillars />
-      </div>
-
-      {/* Patient Success Stories & Recipient Testimonials */}
-      <div id="section-stories">
-        <PatientSuccessStories />
-      </div>
-
-      {/* Recent Activity: Requests vs Donors */}
-      <section id="section-feed" className="bg-white rounded-xl border border-slate-200 p-5 shadow-xs">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4 pb-3 border-b border-slate-100">
-          <div className="flex items-center gap-2">
-            <button
-              onClick={() => setActiveListTab('requests')}
-              className={`text-sm font-bold tracking-tight pb-1 border-b-2 transition-colors ${
-                activeListTab === 'requests'
-                  ? 'border-teal-600 text-teal-800'
-                  : 'border-transparent text-slate-500 hover:text-slate-800'
-              }`}
-            >
-              Latest Requisitions ({requests.length})
-            </button>
-            <span className="text-slate-300">|</span>
-            <button
-              onClick={() => setActiveListTab('donors')}
-              className={`text-sm font-bold tracking-tight pb-1 border-b-2 transition-colors ${
-                activeListTab === 'donors'
-                  ? 'border-teal-600 text-teal-800'
-                  : 'border-transparent text-slate-500 hover:text-slate-800'
-              }`}
-            >
-              Nearby Available Donors ({donors.length})
-            </button>
-          </div>
-
-          <button
-            onClick={() => setActiveTab(activeListTab === 'requests' ? 'requests' : 'find-donors')}
-            className="text-xs font-semibold text-teal-700 hover:text-teal-800 inline-flex items-center gap-1"
+            onClick={() => setActiveTab('requests')}
+            className="text-xs font-semibold text-teal-700 hover:text-teal-800 inline-flex items-center gap-1 cursor-pointer"
           >
             <span>View All</span>
             <ChevronRight className="h-3.5 w-3.5" />
           </button>
         </div>
 
-        {activeListTab === 'requests' ? (
-          <div className="divide-y divide-slate-100">
-            {requests.slice(0, 4).map(req => (
-              <div
-                key={req.id}
-                onClick={() => setSelectedRequest(req)}
-                className="py-3 flex flex-col sm:flex-row sm:items-center justify-between gap-2 hover:bg-slate-50 px-2 rounded-lg cursor-pointer transition-colors"
-              >
-                <div className="space-y-1">
-                  <div className="flex items-center gap-2 text-xs text-slate-500">
-                    <span className="font-semibold text-slate-900 uppercase tracking-wider text-[10px]">
-                      {req.category}
-                    </span>
-                    <span>·</span>
-                    <span className="flex items-center gap-1">
-                      <MapPin className="h-3 w-3 text-slate-400" />
-                      {req.hospitalName}
-                    </span>
-                    <span>·</span>
-                    <span className="font-mono text-[11px] text-slate-600">
-                      {req.deadlineDate}
-                    </span>
-                  </div>
-                  <h4 className="text-sm font-semibold text-slate-900">
-                    {req.title}
-                  </h4>
-                </div>
-
-                <div className="flex items-center gap-3 shrink-0">
-                  <span className={`text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded border ${
-                    req.urgency === 'emergency'
-                      ? 'bg-rose-50 text-rose-700 border-rose-200'
-                      : req.urgency === 'urgent'
-                      ? 'bg-amber-50 text-amber-700 border-amber-200'
-                      : 'bg-slate-50 text-slate-700 border-slate-200'
-                  }`}>
-                    {req.urgency}
-                  </span>
-                  <span className="text-xs font-medium text-slate-500 capitalize">
-                    {req.status.replace('_', ' ')}
-                  </span>
-                  <ChevronRight className="h-4 w-4 text-slate-400" />
-                </div>
-              </div>
-            ))}
+        {bloodRequests.length === 0 ? (
+          <div className="px-5 py-10 text-center">
+            <Droplet className="h-8 w-8 text-slate-300 mx-auto mb-2" />
+            <p className="text-sm text-slate-500">No active blood requests yet.</p>
+            <button
+              onClick={() => setIsCreateRequestModalOpen(true)}
+              className="mt-3 text-xs font-semibold text-teal-600 hover:text-teal-700 underline"
+            >
+              Create the first request
+            </button>
           </div>
         ) : (
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
-            {donors.slice(0, 4).map(donor => (
-              <div
-                key={donor.id}
-                onClick={() => setSelectedDonor(donor)}
-                className="p-3.5 rounded-lg border border-slate-200 bg-slate-50/50 hover:bg-slate-50 hover:border-slate-300 transition-all cursor-pointer flex flex-col justify-between"
-              >
-                <div>
-                  <div className="flex items-center justify-between mb-2">
-                    <div className="text-xs font-bold text-slate-900">
-                      {donor.donorName}
-                    </div>
-                    <span className="text-[10px] font-medium text-emerald-700 bg-emerald-50 px-1.5 py-0.5 rounded border border-emerald-200">
-                      {donor.distanceKm} km away
-                    </span>
-                  </div>
-                  <div className="text-xs text-slate-500 mb-2">
-                    {donor.city}, {donor.state}
-                  </div>
-                  <div className="flex flex-wrap gap-1 mb-2">
-                    {donor.categories.map(c => (
-                      <span key={c} className="text-[10px] font-semibold bg-white border border-slate-200 px-1.5 py-0.5 rounded text-slate-700 capitalize">
-                        {c.replace('_', ' ')}
-                      </span>
-                    ))}
-                  </div>
-                </div>
+          <div className="divide-y divide-slate-100">
+            <div className="px-5 py-2 bg-amber-50/60 border-b border-amber-200/50 text-[11px] text-amber-800">
+              Potential match — final clinical eligibility must be confirmed by the attending hospital facility.
+            </div>
+            {bloodRequests.slice(0, 6).map(req => {
+              // Build a clean title — never show blank or undefined
+              const displayTitle = req.title?.trim() ||
+                (req.bloodRequirements?.targetBloodGroup
+                  ? `Blood request — ${req.bloodRequirements.targetBloodGroup}`
+                  : `Blood donation request`);
 
-                <div className="pt-2 border-t border-slate-200/60 flex items-center justify-between text-xs">
-                  <span className="text-slate-500 text-[11px]">
-                    {donor.totalDonationsCount} donations
-                  </span>
-                  <span className="text-teal-700 font-semibold text-[11px]">
-                    View Profile →
-                  </span>
+              return (
+                <div
+                  key={req.id}
+                  onClick={() => setSelectedRequest(req)}
+                  className="px-5 py-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-2 hover:bg-slate-50 cursor-pointer transition-colors"
+                >
+                  <div className="flex items-start gap-3">
+                    <div className={`mt-0.5 h-2 w-2 rounded-full shrink-0 ${
+                      req.urgency === 'emergency' ? 'bg-rose-500 animate-pulse' :
+                      req.urgency === 'urgent' ? 'bg-amber-500' : 'bg-teal-500'
+                    }`} />
+                    <div className="space-y-0.5 min-w-0">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className={`text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded border ${
+                          req.urgency === 'emergency'
+                            ? 'bg-rose-50 text-rose-700 border-rose-200'
+                            : req.urgency === 'urgent'
+                            ? 'bg-amber-50 text-amber-700 border-amber-200'
+                            : 'bg-slate-50 text-slate-600 border-slate-200'
+                        }`}>
+                          {req.urgency}
+                        </span>
+                        {req.bloodRequirements?.targetBloodGroup && (
+                          <span className="text-[10px] font-bold bg-rose-100 text-rose-800 px-2 py-0.5 rounded border border-rose-200">
+                            {req.bloodRequirements.targetBloodGroup}
+                          </span>
+                        )}
+                        {req.unitsNeeded != null && req.unitsNeeded > 0 && (
+                          <span className="text-[10px] text-slate-500 font-medium">
+                            {req.unitsNeeded} unit{req.unitsNeeded !== 1 ? 's' : ''} needed
+                          </span>
+                        )}
+                      </div>
+                      <h3 className="text-sm font-semibold text-slate-900 truncate">{displayTitle}</h3>
+                      <div className="flex items-center gap-3 text-xs text-slate-500">
+                        {req.hospitalName && (
+                          <span className="flex items-center gap-1">
+                            <MapPin className="h-3 w-3" />
+                            {req.hospitalName}
+                          </span>
+                        )}
+                        {req.deadlineDate && (
+                          <span className="flex items-center gap-1">
+                            <Clock className="h-3 w-3" />
+                            {req.deadlineDate}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-2 shrink-0 pl-5 sm:pl-0">
+                    <span className="text-xs text-slate-500 capitalize">{req.status.replace('_', ' ')}</span>
+                    {donorResponses.some(
+                      r => r.requestId === req.id && (
+                        r.donorUserId === currentUser.id ||
+                        (firebaseUser && r.donorUserId === firebaseUser.uid)
+                      )
+                    ) ? (
+                      <span className="text-[11px] font-bold text-emerald-800 bg-emerald-50 border border-emerald-300 px-2.5 py-1 rounded-lg">
+                        ✓ Response Sent
+                      </span>
+                    ) : (
+                      <button
+                        onClick={async (e) => {
+                          e.stopPropagation();
+                          setRespondingReqId(req.id);
+                          try {
+                            await respondToRequest(req.id);
+                          } finally {
+                            setRespondingReqId(null);
+                          }
+                        }}
+                        disabled={respondingReqId === req.id}
+                        className="text-[11px] font-bold text-white bg-teal-600 hover:bg-teal-700 px-2.5 py-1 rounded-lg shadow-2xs transition-colors whitespace-nowrap cursor-pointer disabled:opacity-50"
+                      >
+                        {respondingReqId === req.id ? 'Sending...' : "I'm Available"}
+                      </button>
+                    )}
+                    <button
+                      onClick={e => { e.stopPropagation(); setActiveTab('find-donors'); }}
+                      className="text-[11px] font-bold text-teal-700 hover:text-teal-800 bg-teal-50 hover:bg-teal-100 border border-teal-200 px-2.5 py-1 rounded-lg transition-colors whitespace-nowrap cursor-pointer"
+                    >
+                      Find Donors →
+                    </button>
+                  </div>
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         )}
       </section>
 
-      {/* 3. Floating Scroll to Top & Section Scroller Controller */}
-      {showScrollTop && (
-        <aside
-          aria-label="Floating page scroller"
-          className="fixed bottom-6 right-6 z-40 flex flex-col items-center gap-2 animate-in fade-in slide-in-from-bottom-4 duration-200"
-        >
-          <div className="relative group">
-            <button
-              onClick={() => window.scrollTo({ top: 0, behavior: 'smooth' })}
-              className="h-11 w-11 rounded-full bg-teal-600 hover:bg-teal-700 text-white flex items-center justify-center shadow-lg hover:shadow-xl transition-all transform hover:-translate-y-1 active:translate-y-0 cursor-pointer border-2 border-white ring-2 ring-teal-500/30"
-              title="Scroll to top of page"
-              aria-label="Scroll to top of page"
-            >
-              <ArrowUp className="h-5 w-5" />
-            </button>
-            <div className="absolute bottom-full right-0 mb-2 hidden group-hover:block bg-slate-900 text-white text-[11px] font-semibold py-1 px-2.5 rounded-lg whitespace-nowrap shadow-md pointer-events-none">
-              Scroll to top ({Math.round(scrollProgress)}%)
+      {/* STAT Deadline Queue */}
+      <DeadlinesWidget />
+
+      {/* Available Blood Donors */}
+      <section className="bg-white rounded-xl border border-slate-200 shadow-xs overflow-hidden">
+        <div className="flex items-center justify-between px-5 py-4 border-b border-slate-100">
+          <div className="flex items-center gap-2.5">
+            <div className="h-7 w-7 rounded-lg bg-sky-100 text-sky-600 flex items-center justify-center">
+              <Users className="h-4 w-4" />
+            </div>
+            <div>
+              <h2 className="text-sm font-bold text-slate-900">Available Blood Donors</h2>
+              <p className="text-[11px] text-slate-400">
+                {availableBloodDonors.length > 0
+                  ? `${availableBloodDonors.length} blood donor${availableBloodDonors.length !== 1 ? 's' : ''} available — sample data`
+                  : 'No blood donors available right now'}
+              </p>
             </div>
           </div>
+          <button
+            onClick={() => setActiveTab('find-donors')}
+            className="text-xs font-semibold text-teal-700 hover:text-teal-800 inline-flex items-center gap-1 cursor-pointer"
+          >
+            <span>Find All</span>
+            <ChevronRight className="h-3.5 w-3.5" />
+          </button>
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 p-4">
+          {availableBloodDonors.slice(0, 4).map(donor => (
+            <div
+              key={donor.id}
+              onClick={() => setSelectedDonor(donor)}
+              className="p-3.5 rounded-lg border border-slate-200 bg-slate-50/50 hover:bg-slate-50 hover:border-teal-200 transition-all cursor-pointer"
+            >
+              <div className="flex items-center justify-between mb-1.5">
+                <div className="text-xs font-bold text-slate-900 truncate">{donor.donorName}</div>
+                {donor.bloodDetails?.bloodGroup && (
+                  <span className="text-[10px] font-bold bg-rose-100 text-rose-700 px-1.5 py-0.5 rounded border border-rose-200 shrink-0">
+                    {donor.bloodDetails.bloodGroup}
+                  </span>
+                )}
+              </div>
+              <div className="text-[11px] text-slate-500 mb-1.5">{donor.city}, {donor.state}</div>
+              <div className="flex items-center justify-between text-[11px]">
+                <span className="text-emerald-700 font-medium">{donor.distanceKm} km away</span>
+                <span className="text-teal-700 font-semibold">View →</span>
+              </div>
+            </div>
+          ))}
+          {availableBloodDonors.length === 0 && (
+            <div className="col-span-4 py-8 text-center text-sm text-slate-400">
+              No blood donors available right now.
+              <button
+                onClick={() => setIsRegisterDonorModalOpen(true)}
+                className="ml-2 text-teal-600 underline"
+              >
+                Register as a donor
+              </button>
+            </div>
+          )}
+        </div>
+      </section>
+
+      {/* Verified Hospitals — blood-relevant only */}
+      {bloodRelevantOrgs.length > 0 && (
+        <section className="bg-white rounded-xl border border-slate-200 shadow-xs overflow-hidden">
+          <div className="flex items-center justify-between px-5 py-4 border-b border-slate-100">
+            <div className="flex items-center gap-2.5">
+              <div className="h-7 w-7 rounded-lg bg-teal-100 text-teal-600 flex items-center justify-center">
+                <ShieldCheck className="h-4 w-4" />
+              </div>
+              <div>
+                <h2 className="text-sm font-bold text-slate-900">Verified Hospitals</h2>
+                <p className="text-[11px] text-slate-400">{bloodRelevantOrgs.length} registered partner hospitals</p>
+              </div>
+            </div>
+            <button
+              onClick={() => setActiveTab('hospital')}
+              className="text-xs font-semibold text-teal-700 hover:text-teal-800 inline-flex items-center gap-1 cursor-pointer"
+            >
+              <span>Hospital Portal</span>
+              <ChevronRight className="h-3.5 w-3.5" />
+            </button>
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 p-4">
+            {bloodRelevantOrgs.slice(0, 6).map(org => (
+              <div key={org.id} className="flex items-start gap-2.5 p-3 rounded-lg border border-slate-100 bg-slate-50/40">
+                <ShieldCheck className="h-4 w-4 text-teal-500 mt-0.5 shrink-0" />
+                <div>
+                  <div className="text-xs font-semibold text-slate-900">{org.name}</div>
+                  <div className="text-[11px] text-slate-500">{org.city}, {org.state}</div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
+
+      {/* e-RaktKosh Integration Status — blood-relevant external reference */}
+      <ExternalStatsWidget />
+
+      {/* Scroll to top */}
+      {showScrollTop && (
+        <aside className="fixed bottom-6 right-6 z-40">
+          <button
+            onClick={() => window.scrollTo({ top: 0, behavior: 'smooth' })}
+            className="h-11 w-11 rounded-full bg-teal-600 hover:bg-teal-700 text-white flex items-center justify-center shadow-lg transition-all cursor-pointer border-2 border-white"
+            aria-label="Scroll to top"
+          >
+            <ArrowUp className="h-5 w-5" />
+          </button>
         </aside>
       )}
     </div>

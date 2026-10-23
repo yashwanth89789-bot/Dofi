@@ -1,14 +1,20 @@
 import React from 'react';
-import { Clock, AlertTriangle, ArrowRight, ShieldCheck, Heart } from 'lucide-react';
+import { Clock, AlertTriangle, ArrowRight } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
 import { DonationRequest } from '../../types';
 
 export const DeadlinesWidget: React.FC = () => {
   const { requests, setSelectedRequest } = useApp();
 
-  // Filter requests that are active and sort by deadline hours remaining
+  // Blood requests only, active, sorted by deadline
   const activeRequests = requests
-    .filter(r => r.status !== 'completed' && r.status !== 'cancelled')
+    .filter(r =>
+      r.category === 'blood' &&
+      r.status !== 'completed' &&
+      r.status !== 'cancelled'
+    )
+    // deduplicate by id
+    .filter((r, idx, arr) => arr.findIndex(x => x.id === r.id) === idx)
     .sort((a, b) => a.deadlineHoursRemaining - b.deadlineHoursRemaining);
 
   const getUrgencyColor = (urgency: DonationRequest['urgency'], hours: number) => {
@@ -36,11 +42,11 @@ export const DeadlinesWidget: React.FC = () => {
     };
   };
 
-  const categoryLabels = {
-    blood: 'Blood',
-    organ: 'Organ',
-    bone_tissue: 'Bone / Tissue',
-    hair: 'Hair'
+  // Safe percentage — avoids division-by-zero and impossible values like "1/333%"
+  const calcPercent = (fulfilled: number | undefined, needed: number | undefined): number | null => {
+    if (!needed || needed <= 0) return null;           // no units data
+    const pct = Math.round(((fulfilled ?? 0) / needed) * 100);
+    return Math.min(100, Math.max(0, pct));            // clamp 0–100
   };
 
   return (
@@ -49,84 +55,101 @@ export const DeadlinesWidget: React.FC = () => {
         <div>
           <div className="flex items-center gap-2">
             <h3 className="text-base font-bold text-slate-900 tracking-tight">
-              Clinical Deadlines & Urgency Queue
+              Blood Donation Deadline Queue
             </h3>
             <span className="bg-rose-50 text-rose-700 text-xs font-semibold px-2 py-0.5 rounded-full border border-rose-200 tabular-nums">
               {activeRequests.length} Active
             </span>
           </div>
           <p className="text-xs text-slate-500 mt-0.5">
-            Real-time deadline tracking for emergency transfusions, transplant windows, and tissue cross-matching
+            Real-time deadline tracking for urgent blood requests and transfusion deadlines.
           </p>
         </div>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
-        {activeRequests.slice(0, 3).map(req => {
-          const style = getUrgencyColor(req.urgency, req.deadlineHoursRemaining);
-          const percentFulfilled = req.unitsNeeded ? Math.round(((req.unitsFulfilled || 0) / req.unitsNeeded) * 100) : 50;
+      {activeRequests.length === 0 ? (
+        <div className="py-8 text-center text-sm text-slate-400">
+          No active blood requests with deadlines right now.
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+          {activeRequests.slice(0, 3).map(req => {
+            const style = getUrgencyColor(req.urgency, req.deadlineHoursRemaining);
+            const pct = calcPercent(req.unitsFulfilled, req.unitsNeeded);
+            const hasFulfillmentData = pct !== null;
 
-          return (
-            <div
-              key={req.id}
-              onClick={() => setSelectedRequest(req)}
-              className={`p-4 rounded-lg bg-slate-50/70 border border-slate-200 hover:border-slate-300 hover:bg-slate-50 transition-all cursor-pointer flex flex-col justify-between ${style.border}`}
-            >
-              <div>
-                <div className="flex items-center justify-between gap-2 text-xs mb-2">
-                  <div className="flex items-center gap-1.5 font-medium text-slate-600">
-                    <span className="font-semibold text-slate-900 capitalize">
-                      {categoryLabels[req.category]}
+            return (
+              <div
+                key={req.id}
+                onClick={() => setSelectedRequest(req)}
+                className={`p-4 rounded-lg bg-slate-50/70 border border-slate-200 hover:border-slate-300 hover:bg-slate-50 transition-all cursor-pointer flex flex-col justify-between ${style.border}`}
+              >
+                <div>
+                  <div className="flex items-center justify-between gap-2 text-xs mb-2">
+                    <div className="flex items-center gap-1.5 font-medium text-slate-600">
+                      <span className="font-semibold text-slate-900">Blood</span>
+                      <span>·</span>
+                      <span className="truncate max-w-[120px]">{req.hospitalName.split(' ')[0]}</span>
+                    </div>
+                    <span className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider border ${style.badge}`}>
+                      {req.urgency}
                     </span>
-                    <span>·</span>
-                    <span className="truncate max-w-[120px]">{req.hospitalName.split(' ')[0]}</span>
                   </div>
-                  <span className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider border ${style.badge}`}>
-                    {req.urgency}
-                  </span>
+
+                  <h4 className="text-sm font-semibold text-slate-900 line-clamp-2 mb-2">
+                    {req.title?.trim() || (req.bloodRequirements?.targetBloodGroup
+                      ? `Blood request — ${req.bloodRequirements.targetBloodGroup}`
+                      : 'Blood donation request')}
+                  </h4>
+
+                  <div className="flex items-center gap-2 text-xs text-slate-500 mb-3">
+                    <Clock className="h-3.5 w-3.5 text-slate-400 shrink-0" />
+                    <span className="font-mono tabular-nums font-medium text-slate-700">
+                      {req.deadlineHoursRemaining}h remaining
+                    </span>
+                    {req.patientAlias && (
+                      <>
+                        <span>·</span>
+                        <span className="truncate">{req.patientAlias}</span>
+                      </>
+                    )}
+                  </div>
                 </div>
 
-                <h4 className="text-sm font-semibold text-slate-900 line-clamp-2 mb-2">
-                  {req.title}
-                </h4>
+                <div>
+                  {hasFulfillmentData ? (
+                    <div className="space-y-1 mb-3">
+                      <div className="flex items-center justify-between text-[11px] text-slate-500 font-mono tabular-nums">
+                        <span>
+                          Units: {req.unitsFulfilled ?? 0} / {req.unitsNeeded} ({pct}%)
+                        </span>
+                        <span className={style.text}>{pct}%</span>
+                      </div>
+                      <div className="w-full bg-slate-200 h-1.5 rounded-full overflow-hidden">
+                        <div
+                          className={`h-full ${style.bar} transition-all duration-300`}
+                          style={{ width: `${pct}%` }}
+                        />
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="text-[11px] text-slate-400 mb-3">Units data not available</div>
+                  )}
 
-                <div className="flex items-center gap-2 text-xs text-slate-500 mb-3">
-                  <Clock className="h-3.5 w-3.5 text-slate-400 shrink-0" />
-                  <span className="font-mono tabular-nums font-medium text-slate-700">
-                    {req.deadlineHoursRemaining}h remaining
-                  </span>
-                  <span>·</span>
-                  <span className="truncate">{req.patientAlias}</span>
+                  <div className="pt-2 border-t border-slate-200/60 flex items-center justify-between text-xs">
+                    <span className="text-teal-700 font-semibold text-[11px]">
+                      {req.matchedDonorIds.length} candidate donor{req.matchedDonorIds.length !== 1 ? 's' : ''} ready
+                    </span>
+                    <span className="inline-flex items-center gap-0.5 text-slate-700 font-medium">
+                      Review <ArrowRight className="h-3 w-3" />
+                    </span>
+                  </div>
                 </div>
               </div>
-
-              <div>
-                <div className="space-y-1 mb-3">
-                  <div className="flex items-center justify-between text-[11px] text-slate-500 font-mono tabular-nums">
-                    <span>Units Fulfilled: {req.unitsFulfilled || 0}/{req.unitsNeeded || 1}</span>
-                    <span>{percentFulfilled}%</span>
-                  </div>
-                  <div className="w-full bg-slate-200 h-1.5 rounded-full overflow-hidden">
-                    <div
-                      className={`h-full ${style.bar} transition-all duration-300`}
-                      style={{ width: `${percentFulfilled}%` }}
-                    />
-                  </div>
-                </div>
-
-                <div className="pt-2 border-t border-slate-200/60 flex items-center justify-between text-xs">
-                  <span className="text-teal-700 font-semibold text-[11px]">
-                    {req.matchedDonorIds.length} candidate donors ready
-                  </span>
-                  <span className="inline-flex items-center gap-0.5 text-slate-700 font-medium group-hover:text-teal-700">
-                    Review <ArrowRight className="h-3 w-3" />
-                  </span>
-                </div>
-              </div>
-            </div>
-          );
-        })}
-      </div>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 };

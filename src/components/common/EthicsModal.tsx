@@ -37,7 +37,7 @@ export const EthicsModal: React.FC = () => {
             <div>
               <h3 className="font-semibold text-amber-900">Zero-Commercialization Mandate</h3>
               <p className="text-xs text-amber-800 mt-1 leading-relaxed">
-                Under the National Organ Transplant Act (42 U.S.C. 274e) and international WHO Guiding Principles on Human Cell, Tissue and Organ Transplantation, it is unlawful for any person to knowingly acquire, receive, or otherwise transfer any human organ or tissue for valuable consideration.
+                Under national and international blood safety regulations, the National Blood Policy, and WHO guidelines for Voluntary Non-Remunerated Blood Donation (VNRBD), it is unlawful to buy, sell, or monetize human blood or blood components. All donations coordinated through Dofi are strictly voluntary and altruistic.
               </p>
             </div>
           </div>
@@ -50,40 +50,40 @@ export const EthicsModal: React.FC = () => {
               <div className="p-3.5 rounded-lg border border-slate-200 bg-slate-50/50">
                 <div className="flex items-center gap-2 font-medium text-slate-900 mb-1">
                   <Building2 className="h-4 w-4 text-teal-600" />
-                  <span>Licensed Intermediaries Only</span>
+                  <span>Licensed Blood Banks &amp; Hospitals</span>
                 </div>
                 <p className="text-xs text-slate-500 leading-relaxed">
-                  All clinical matches, blood collection, bone marrow cross-typing, and surgical procedures must occur at certified transplant hospitals or accredited blood/tissue repositories.
+                  All blood collection, component preparation, serological cross-matching, and transfusions must occur exclusively at licensed blood centers and hospital blood banks.
                 </p>
               </div>
 
               <div className="p-3.5 rounded-lg border border-slate-200 bg-slate-50/50">
                 <div className="flex items-center gap-2 font-medium text-slate-900 mb-1">
                   <CheckCircle2 className="h-4 w-4 text-emerald-600" />
-                  <span>Identity & Serology Screening</span>
+                  <span>Clinical &amp; Serology Screening</span>
                 </div>
                 <p className="text-xs text-slate-500 leading-relaxed">
-                  Donors undergo government ID validation, infectious disease serology, and blood-borne pathogen verification before any clinical handoff.
+                  Attending blood banks perform pre-donation clinical assessments (vital signs, Hb ≥ 12.5 g/dL) and mandatory laboratory screening for transfusion-transmissible infections (HIV, HBV, HCV, Syphilis, Malaria).
                 </p>
               </div>
 
               <div className="p-3.5 rounded-lg border border-slate-200 bg-slate-50/50">
                 <div className="flex items-center gap-2 font-medium text-slate-900 mb-1">
                   <FileText className="h-4 w-4 text-indigo-600" />
-                  <span>Informed Voluntary Consent</span>
+                  <span>Voluntary Informed Consent</span>
                 </div>
                 <p className="text-xs text-slate-500 leading-relaxed">
-                  Donors retain complete autonomy to decline, pause, or withdraw their pledge at any stage prior to clinical collection without penalty or coercion.
+                  Donors retain complete autonomy to accept, pause, or decline availability for any request at any stage prior to blood collection without coercion or penalty.
                 </p>
               </div>
 
               <div className="p-3.5 rounded-lg border border-slate-200 bg-slate-50/50">
                 <div className="flex items-center gap-2 font-medium text-slate-900 mb-1">
                   <ShieldCheck className="h-4 w-4 text-sky-600" />
-                  <span>Strict Data Privacy</span>
+                  <span>Strict Donor Privacy</span>
                 </div>
                 <p className="text-xs text-slate-500 leading-relaxed">
-                  Direct personal phone numbers and residential addresses are masked. Organ donor matching is hospital-mediated by default to prevent illicit contact.
+                  Direct personal contact numbers and precise addresses are shielded. Blood donation coordination is hospital-mediated to prevent unsolicited communications.
                 </p>
               </div>
             </div>
@@ -93,7 +93,7 @@ export const EthicsModal: React.FC = () => {
           <div className="border-t border-slate-200 pt-4">
             <h4 className="font-semibold text-slate-900 mb-1">Reporting Violations:</h4>
             <p className="text-xs text-slate-500 leading-relaxed">
-              If you observe any user attempting to solicit payment, broker unverified biological material, or falsify medical requirements, use the "Report" button on the profile or requisition. Reports are immediately routed to our 24/7 Clinical Compliance Committee.
+              If you observe any user attempting to solicit payment for blood units, broker commercial donations, or falsify requisitions, use the Report button on the requisition. Reports are immediately routed for review and action.
             </p>
           </div>
         </div>

@@ -3,7 +3,7 @@ import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
-import { GoogleGenAI } from '@google/genai';
+import { GoogleGenAI, Type } from '@google/genai';
 
 dotenv.config();
 
@@ -21,8 +21,11 @@ const isProd = process.env.NODE_ENV === 'production';
 app.use(express.json({ limit: '10mb' }));
 
 // Initialize Google GenAI client according to SKILL.md
+// Initialize Google GenAI client according to SKILL.md
 // Must include User-Agent header 'aistudio-build'
-const apiKey = process.env.GEMINI_API_KEY;
+const getGeminiApiKey = () => (process.env.GEMINI_API_KEY ? process.env.GEMINI_API_KEY.trim() : undefined);
+
+const apiKey = getGeminiApiKey();
 let ai: GoogleGenAI | null = null;
 if (apiKey) {
   ai = new GoogleGenAI({
@@ -35,39 +38,163 @@ if (apiKey) {
   });
 }
 
+function getActiveAIClient(): { client: GoogleGenAI; key: string } {
+  const key = getGeminiApiKey();
+  if (!key) {
+    const err: any = new Error('Gemini API key is not configured.');
+    err.code = 'MISSING_API_KEY';
+    err.status = 503;
+    throw err;
+  }
+  return {
+    client: new GoogleGenAI({
+      apiKey: key,
+      httpOptions: {
+        headers: {
+          'User-Agent': 'aistudio-build',
+        },
+      },
+    }),
+    key,
+  };
+}
+
+// Structured schema for donor eligibility screening
+const donorEligibilitySchema = {
+  type: Type.OBJECT,
+  properties: {
+    status: {
+      type: Type.STRING,
+      enum: ['eligible_for_review', 'temporarily_deferred', 'needs_manual_review'],
+      description: 'Overall preliminary screening status',
+    },
+    statusLabel: {
+      type: Type.STRING,
+      enum: [
+        'Preliminary Screening: No Immediate Flag',
+        'Preliminary Screening: Needs Manual Review',
+        'Preliminary Screening: Potential Temporary Deferral',
+      ],
+      description: 'Human-readable preliminary screening status title',
+    },
+    summary: {
+      type: Type.STRING,
+      description: 'Clear, objective 2-3 sentence clinical overview of the screening results',
+    },
+    parameters: {
+      type: Type.ARRAY,
+      items: {
+        type: Type.OBJECT,
+        properties: {
+          name: {
+            type: Type.STRING,
+            description: 'Parameter evaluated (Age, Weight, Hemoglobin, Interval, Health, Medications, History, Self-Deferral)',
+          },
+          value: {
+            type: Type.STRING,
+            description: 'Entered candidate value or status',
+          },
+          status: {
+            type: Type.STRING,
+            enum: ['pass', 'review', 'flag'],
+            description: 'Status of the parameter',
+          },
+          reason: {
+            type: Type.STRING,
+            description: 'Clinical rationale for this parameter assessment',
+          },
+        },
+        required: ['name', 'value', 'status', 'reason'],
+      },
+    },
+    recommendation: {
+      type: Type.STRING,
+      description: 'Concrete supportive next steps for the donor without medical clearance claims',
+    },
+    disclaimer: {
+      type: Type.STRING,
+      description: 'Mandatory clinical safety notice: Final eligibility for blood donation must be determined by a qualified blood-centre/blood-bank professional after the required examination and screening.',
+    },
+  },
+  required: ['status', 'statusLabel', 'summary', 'parameters', 'recommendation', 'disclaimer'],
+};
+
 // Model helper: Use gemini-3.1-flash-lite as primary (fast, robust quota), with gemini-3.8-flash fallback
 async function executeGeminiPrompt(
   prompt: string,
   systemInstruction: string,
-  forceJson: boolean = true
-): Promise<{ text: string; model: string }> {
-  if (!ai) {
-    throw new Error('GEMINI_API_KEY environment variable is not configured');
-  }
+  forceJson: boolean = true,
+  responseSchema?: any
+): Promise<{ text: string; model: string; response?: any }> {
+  const { client } = getActiveAIClient();
 
   const candidateModels = ['gemini-3.1-flash-lite', 'gemini-3.8-flash'];
   let lastError: any = null;
 
   for (const model of candidateModels) {
     try {
-      const response = await ai.models.generateContent({
+      const config: any = {
+        systemInstruction,
+        temperature: 0.2,
+      };
+
+      if (forceJson) {
+        config.responseMimeType = 'application/json';
+        if (responseSchema) {
+          config.responseSchema = responseSchema;
+        }
+      }
+
+      const response = await client.models.generateContent({
         model,
         contents: prompt,
-        config: {
-          systemInstruction,
-          temperature: 0.2,
-          ...(forceJson ? { responseMimeType: 'application/json' } : {}),
-        },
+        config,
       });
 
-      const text = response.text || '';
-      if (text) {
-        return { text, model };
+      // Verify candidates exist
+      const candidates = response.candidates;
+      if (!candidates || candidates.length === 0) {
+        console.warn(`[Dofi AI] Model ${model} returned no candidates. Prompt feedback:`, response.promptFeedback);
+        const err: any = new Error('Gemini returned no usable content.');
+        err.code = 'NO_CANDIDATES';
+        err.details = response.promptFeedback?.blockReason || 'No candidates generated';
+        lastError = err;
+        continue;
       }
+
+      const candidate = candidates[0];
+      const finishReason = candidate.finishReason;
+
+      if (finishReason === 'SAFETY' || finishReason === 'RECITATION' || finishReason === 'BLOCKLIST') {
+        console.warn(`[Dofi AI] Model ${model} candidate blocked by safety filter:`, {
+          finishReason,
+          safetyRatings: candidate.safetyRatings,
+        });
+        const err: any = new Error('Response was blocked by content safety filters.');
+        err.code = 'SAFETY_BLOCKED';
+        err.status = 422;
+        err.details = `Finish reason: ${finishReason}`;
+        throw err;
+      }
+
+      // Check text content
+      const text = response.text?.trim() || '';
+      if (!text) {
+        console.warn(`[Dofi AI] Model ${model} returned empty response text. Finish reason: ${finishReason}`);
+        const err: any = new Error('Gemini returned no usable content.');
+        err.code = 'EMPTY_CONTENT';
+        err.details = `Finish reason: ${finishReason || 'EMPTY'}`;
+        lastError = err;
+        continue;
+      }
+
+      return { text, model, response };
     } catch (err: any) {
       lastError = err;
-      console.warn(`[DonorConnect AI] Attempt with ${model} failed:`, err?.message || err);
-      // Try next model if quota/rate limited
+      if (err.status === 401 || err.code === 'SAFETY_BLOCKED' || err.code === 'MISSING_API_KEY') {
+        throw err;
+      }
+      console.warn(`[Dofi AI] Attempt with ${model} failed:`, err?.message || err);
     }
   }
 
@@ -75,107 +202,272 @@ async function executeGeminiPrompt(
 }
 
 // -------------------------------------------------------------
-// ENDPOINT 1: AI Clinical Cross-Match & HLA Compatibility Predictor
+// ENDPOINT: AI Donor Clinical Eligibility Screening (Donor-Only)
 // -------------------------------------------------------------
-app.post('/api/ai/crossmatch', async (req, res) => {
+app.post('/api/ai/donor-eligibility', async (req, res) => {
   try {
-    const { request, donor, customParams } = req.body;
-    if (!request || !donor) {
-      return res.status(400).json({ error: 'Both request and donor parameters are required.' });
+    const {
+      candidateName,
+      bloodGroup,
+      age,
+      weightKg,
+      hemoglobin,
+      lastDonatedMonths,
+      // Recent Health & Medication Screening
+      feelingUnwell,
+      recentFeverInfection,
+      recentAntibioticsOrMedication,
+      recentMedicationAspirin,
+      recentVaccination,
+      recentAlcoholUse,
+      recentSurgeryOrProcedure,
+      recentDentalProcedure,
+      recentTattooOrPiercing,
+      skinInfectionAtSite,
+      // Donation & Medical History Screening
+      previousFaintingOrReaction,
+      previousAdviceNotToDonate,
+      recentBloodTransfusion,
+      knownMedicalCondition,
+      pregnancyOrBreastfeeding,
+      otherHealthConcerns,
+      // Self-Deferral
+      selfDeferral,
+      // Consent & Privacy
+      screeningAcknowledgement,
+      privacyConsent,
+    } = req.body;
+
+    // Validate Consent & Privacy Acknowledgements (Required)
+    if (!screeningAcknowledgement || !privacyConsent) {
+      return res.status(400).json({
+        error: 'Please review and confirm the required acknowledgements before continuing.',
+        code: 'MISSING_CONSENT',
+      });
     }
 
-    const systemInstruction = `You are the Lead Clinical Transplant & Transfusion AI Specialist for DonorConnect 4Care.
-You evaluate immunologic, clinical, hematologic, serologic, and biometric compatibility between medical donation recipients and registered donors under WHO, UNOS, and FDA standards.
-Always output pure valid JSON strictly conforming to this schema without Markdown codeblocks or comments:
-{
-  "compatibilityScore": number (0 to 100),
-  "riskLevel": "OPTIMAL" | "ACCEPTABLE" | "ELEVATED_RISK" | "HIGH_RISK_INCOMPATIBLE",
-  "riskBadge": string,
-  "clinicalHeadline": string,
-  "clinicalSummary": string,
-  "patientExplanation": string,
-  "parametersAnalysis": [
-    {
-      "parameter": string,
-      "status": "pass" | "warning" | "fail" | "info",
-      "donorValue": string,
-      "recipientRequirement": string,
-      "clinicalImplication": string
+    if (!age || !weightKg || !hemoglobin) {
+      return res.status(400).json({
+        error: 'Age, weight, and hemoglobin are required clinical parameters.',
+        code: 'MISSING_PARAMETERS',
+      });
     }
-  ],
-  "hlaBreakdown": {
-    "applicable": boolean,
-    "totalMatchScore": string,
-    "gvhdRisk": "Low" | "Moderate" | "High",
-    "locusMatches": [
-      {
-        "locus": string,
-        "donorAllele": string,
-        "recipientAllele": string,
-        "matchStatus": "exact_match" | "acceptable_mismatch" | "high_risk_mismatch"
-      }
-    ]
-  },
-  "coldIschemiaAnalysis": {
-    "safeWindowHours": number,
-    "transitRiskTier": "Low" | "Moderate" | "Critical",
-    "preservationProtocol": string
-  },
-  "clinicalBoardRecommendations": [string],
-  "ethicalComplianceNote": string
-}`;
 
-    const prompt = `Analyze clinical compatibility for the following:
-DONATION CATEGORY: ${request.category}
-URGENCY: ${request.urgency}
+    const currentKey = getGeminiApiKey();
+    if (!currentKey) {
+      return res.status(503).json({
+        error: 'Gemini API key is not configured.',
+        code: 'MISSING_API_KEY',
+      });
+    }
 
-RECIPIENT CLINICAL DATA:
-- Patient Alias/Age: ${request.patientAlias}, ${request.patientAge} yo
-- Category: ${request.category}
-- Title: ${request.title}
-- Medical Notes: ${request.medicalNotes}
-- Blood Requirements: ${JSON.stringify(request.bloodRequirements || {})}
-- Organ Requirements: ${JSON.stringify(request.organRequirements || {})}
-- Bone/Tissue Requirements: ${JSON.stringify(request.boneTissueRequirements || {})}
-- Hair Requirements: ${JSON.stringify(request.hairRequirements || {})}
+    const systemInstruction = `You are a Clinical Blood Donation Safety & Pre-Screening Assistant for Dofi, a blood donation coordination platform.
+You evaluate preliminary blood donor screening parameters against standard voluntary blood banking eligibility principles (e.g., Indian NBTC/DGHS, WHO, AABB demonstration references).
+CRITICAL MEDICAL SAFETY BOUNDARIES:
+1. This is a PRELIMINARY AI-ASSISTED SCREENING ASSESSMENT ONLY. It does NOT replace certified on-site clinical assessment.
+2. NEVER use or output forbidden phrases: "Medically Cleared", "Approved to Donate", "Safe to Donate", "Guaranteed Eligible".
+3. Allowed overall status values:
+   - "eligible_for_review" (statusLabel MUST BE "Preliminary Screening: No Immediate Flag")
+   - "needs_manual_review" (statusLabel MUST BE "Preliminary Screening: Needs Manual Review")
+   - "temporarily_deferred" (statusLabel MUST BE "Preliminary Screening: Potential Temporary Deferral")
+4. If the candidate selected self-deferral ("I am unsure whether I should donate today"), the overall status MUST be "needs_manual_review" with statusLabel "Preliminary Screening: Needs Manual Review". Provide supportive, non-judgmental guidance encouraging consultation with the blood centre staff.
+5. The disclaimer MUST state: "Final eligibility for blood donation must be determined by a qualified blood-centre/blood-bank professional after the required examination and screening."
+6. The AI must never make the final clinical decision.`;
 
-DONOR CLINICAL DATA:
-- Donor Name / Age: ${donor.donorName}
-- City/Distance: ${donor.city}, ${donor.state} (${donor.distanceKm || 12} km away)
-- Categories: ${donor.categories?.join(', ')}
-- Verification: ${donor.verificationBadge} (${donor.isVerified ? 'Hospital Verified' : 'Pending'})
-- Blood Details: ${JSON.stringify(donor.bloodDetails || {})}
-- Organ Details: ${JSON.stringify(donor.organDetails || {})}
-- Bone/Tissue Details: ${JSON.stringify(donor.boneTissueDetails || {})}
-- Hair Details: ${JSON.stringify(donor.hairDetails || {})}
-${customParams ? `ADDITIONAL CLINICAL FACTORS: ${JSON.stringify(customParams)}` : ''}
+    const prompt = `Evaluate the following voluntary blood donation pre-screening questionnaire submission:
 
-Provide a deep, realistic clinical compatibility analysis with locus-by-locus reasoning, cold ischemia thresholds, and actionable pre-infusion/transplant preparation steps.`;
+CANDIDATE PARAMETERS:
+- Candidate Name: ${candidateName || 'Candidate'}
+- Blood Group: ${bloodGroup || 'Blood Donation'}
+- Age: ${age} years (reference range: 18-65 years)
+- Weight: ${weightKg} kg (reference minimum: 50 kg)
+- Hemoglobin: ${hemoglobin} g/dL (reference minimum: 12.5 g/dL females, 13.0 g/dL males)
+- Last Donation Interval: ${lastDonatedMonths !== undefined && lastDonatedMonths !== null && lastDonatedMonths !== '' ? `${lastDonatedMonths} months ago` : 'First-time donor or unrecorded'} (minimum interval: 3 months / 84 days)
 
+RECENT HEALTH & MEDICATION SCREENING:
+- Currently feeling unwell: ${feelingUnwell ? 'YES (flag - defer until well)' : 'No'}
+- Recent fever, cough, or acute infection in past 14 days: ${recentFeverInfection ? 'YES (flag - 14-day symptom-free period required)' : 'No'}
+- Recent antibiotics or prescription medication: ${recentAntibioticsOrMedication ? 'YES (flag/review - complete course & check indication)' : 'No'}
+- Recent aspirin / NSAID in past 48h: ${recentMedicationAspirin ? 'YES (review - 48h platelet deferral; whole blood acceptable)' : 'No'}
+- Recent vaccination: ${recentVaccination ? 'YES (review - check vaccine category)' : 'No'}
+- Recent alcohol / intoxicant use: ${recentAlcoholUse ? 'YES (review - minimum 24h sober interval required)' : 'No'}
+- Recent surgery, hospitalization, or major procedure: ${recentSurgeryOrProcedure ? 'YES (flag - procedural recovery deferral)' : 'No'}
+- Recent dental procedure / extraction: ${recentDentalProcedure ? 'YES (flag/review - 24-72h recovery required)' : 'No'}
+- Recent tattooing or body piercing: ${recentTattooOrPiercing ? 'YES (flag - 6-12 month standard screening deferral)' : 'No'}
+- Skin infection, wound, or lesion at donation site: ${skinInfectionAtSite ? 'YES (flag - phlebotomy site must be clear & healthy)' : 'No'}
+
+DONATION & MEDICAL HISTORY:
+- Previous fainting or adverse reaction during donation: ${previousFaintingOrReaction ? 'YES (review - staff hydration & observation precaution)' : 'No'}
+- Previous advice from blood centre not to donate: ${previousAdviceNotToDonate ? 'YES (flag/review - medical officer evaluation needed)' : 'No'}
+- Recent blood transfusion: ${recentBloodTransfusion ? 'YES (flag - 6-12 month deferral)' : 'No'}
+- Known medical condition affecting donation safety: ${knownMedicalCondition ? 'YES (review - medical officer evaluation needed)' : 'No'}
+- Pregnancy, recent pregnancy, or breastfeeding: ${pregnancyOrBreastfeeding ? 'YES (flag - deferred during pregnancy and lactation)' : 'No'}
+- Other health concerns disclosed: ${otherHealthConcerns ? 'YES (review - discuss with staff)' : 'No'}
+
+SELF-DEFERRAL OPTION:
+- Unsure whether to donate / Requesting staff consultation: ${selfDeferral ? 'YES (donor opted for supportive self-deferral consultation)' : 'No'}
+
+CONSENT & PRIVACY STATUS:
+- Preliminary Screening Acknowledgement: Confirmed
+- Personal Data Processing Consent: Confirmed
+
+INSTRUCTIONS:
+Evaluate all relevant screening categories into concise individual parameter entries in the "parameters" array:
+1. Age Eligibility
+2. Weight Requirement
+3. Hemoglobin Level
+4. Donation Rest Interval
+5. Acute Illness & Infection Symptoms
+6. Medications (Antibiotics / Aspirin)
+7. Recent Procedures (Dental / Surgery / Tattoo)
+8. Medical History & Past Reactions
+9. Self-Deferral / Donor Consultation
+
+Assign each parameter a status of "pass", "review", or "flag" with an objective clinical rationale.
+Synthesize overall status:
+- "eligible_for_review" (statusLabel: "Preliminary Screening: No Immediate Flag"): all parameters pass or minor non-deferring observations.
+- "temporarily_deferred" (statusLabel: "Preliminary Screening: Potential Temporary Deferral"): active symptoms, fever, recent infection within 14 days, recent antibiotics, dental procedure within 72h, recent tattoo/transfusion/surgery, or pregnancy.
+- "needs_manual_review" (statusLabel: "Preliminary Screening: Needs Manual Review"): self-deferral requested, borderline measurements, past fainting reaction, or disclosed medical condition.
+
+Never use "Medically Cleared" or "Approved to Donate". Return strict JSON conforming to schema.`;
+
+    const { text, model } = await executeGeminiPrompt(prompt, systemInstruction, true, donorEligibilitySchema);
+
+    // Validate that text is non-empty before JSON.parse
+    const cleanText = text?.trim();
+    if (!cleanText) {
+      console.warn('[Dofi AI] Empty text received from executeGeminiPrompt');
+      return res.status(502).json({
+        error: 'Gemini returned no usable content.',
+        code: 'EMPTY_CONTENT',
+      });
+    }
+
+    let parsed: any;
     try {
-      const { text, model } = await executeGeminiPrompt(prompt, systemInstruction, true);
-      const parsed = JSON.parse(text);
-      return res.json({
-        success: true,
-        aiPowered: true,
-        modelUsed: model,
-        data: parsed,
+      parsed = JSON.parse(cleanText);
+    } catch (parseErr: any) {
+      console.warn('[Dofi AI] Failed to parse structured JSON from Gemini output:', {
+        model,
+        error: parseErr?.message,
       });
-    } catch (aiErr: any) {
-      console.warn('[DonorConnect AI] Crossmatch AI fallback triggered:', aiErr?.message);
-      // Deterministic Clinical Fallback Engine
-      const fallbackResult = generateClinicalCrossmatchFallback(request, donor);
-      return res.json({
-        success: true,
-        aiPowered: false,
-        modelUsed: 'DonorConnect Rule-Based Clinical Engine',
-        notice: 'Clinical rule-based analysis (Gemini offline or quota limit)',
-        data: fallbackResult,
+      return res.status(502).json({
+        error: 'AI service returned an invalid result.',
+        code: 'MALFORMED_JSON',
+        details: parseErr?.message,
       });
     }
+
+    // Validate schema fields
+    const validStatuses = ['eligible_for_review', 'temporarily_deferred', 'needs_manual_review'];
+    if (!parsed || typeof parsed !== 'object' || !validStatuses.includes(parsed.status)) {
+      console.warn('[Dofi AI] Missing or invalid status in parsed result:', parsed?.status);
+      return res.status(502).json({
+        error: 'AI service returned an invalid result (invalid status).',
+        code: 'SCHEMA_MISMATCH',
+      });
+    }
+
+    if (!Array.isArray(parsed.parameters) || parsed.parameters.length === 0) {
+      console.warn('[Dofi AI] Missing or empty parameters array in parsed result');
+      return res.status(502).json({
+        error: 'AI service returned an invalid result (missing parameters).',
+        code: 'SCHEMA_MISMATCH',
+      });
+    }
+
+    if (!parsed.summary || typeof parsed.summary !== 'string') {
+      return res.status(502).json({
+        error: 'AI service returned an invalid result (missing summary).',
+        code: 'SCHEMA_MISMATCH',
+      });
+    }
+
+    // Ensure statusLabel strictly adheres to allowed values
+    if (parsed.status === 'eligible_for_review') {
+      parsed.statusLabel = 'Preliminary Screening: No Immediate Flag';
+    } else if (parsed.status === 'temporarily_deferred') {
+      parsed.statusLabel = 'Preliminary Screening: Potential Temporary Deferral';
+    } else {
+      parsed.statusLabel = 'Preliminary Screening: Needs Manual Review';
+    }
+
+    // Ensure disclaimer
+    parsed.disclaimer =
+      'Final eligibility for blood donation must be determined by a qualified blood-centre/blood-bank professional after the required examination and screening.';
+
+    return res.json({
+      success: true,
+      aiPowered: true,
+      modelUsed: model,
+      data: {
+        ...parsed,
+        consentStatus: {
+          screeningAcknowledged: Boolean(screeningAcknowledgement),
+          privacyConsented: Boolean(privacyConsent),
+          timestamp: new Date().toISOString(),
+        },
+      },
+    });
   } catch (error: any) {
-    console.error('[DonorConnect AI] Error in /api/ai/crossmatch:', error);
-    res.status(500).json({ error: error.message || 'Internal server error' });
+    console.error('[Dofi AI] Error in /api/ai/donor-eligibility:', error?.message || error);
+    const msg = error?.message || '';
+    const status = error?.status;
+
+    if (error?.code === 'MISSING_API_KEY' || msg.includes('API key is not configured')) {
+      return res.status(503).json({
+        error: 'Gemini API key is not configured.',
+        code: 'MISSING_API_KEY',
+      });
+    }
+
+    if (status === 401 || msg.includes('API_KEY_INVALID') || msg.includes('401')) {
+      return res.status(401).json({
+        error: 'Invalid or unauthorized Gemini API key.',
+        code: 'INVALID_API_KEY',
+      });
+    }
+
+    if (status === 403 || msg.includes('PERMISSION_DENIED') || msg.includes('403')) {
+      return res.status(403).json({
+        error: 'Gemini API access forbidden.',
+        code: 'API_FORBIDDEN',
+      });
+    }
+
+    if (
+      status === 429 ||
+      msg.toLowerCase().includes('quota') ||
+      msg.toLowerCase().includes('rate limit') ||
+      msg.includes('RESOURCE_EXHAUSTED')
+    ) {
+      return res.status(429).json({
+        error: 'AI service quota exceeded. Please try again later.',
+        code: 'QUOTA_EXCEEDED',
+        isQuotaError: true,
+      });
+    }
+
+    if (error?.code === 'SAFETY_BLOCKED' || status === 422) {
+      return res.status(422).json({
+        error: 'Response was blocked by content safety filters.',
+        code: 'SAFETY_BLOCKED',
+        details: error?.details,
+      });
+    }
+
+    if (error?.code === 'NO_CANDIDATES' || error?.code === 'EMPTY_CONTENT') {
+      return res.status(502).json({
+        error: 'Gemini returned no usable content.',
+        code: error.code,
+        details: error.details,
+      });
+    }
+
+    return res.status(status || 500).json({
+      error: msg || 'Internal server error',
+      code: error?.code || 'INTERNAL_ERROR',
+    });
   }
 });
 
@@ -263,7 +555,7 @@ Provide a meticulous medical triage decision with exact deferral days if applica
         success: true,
         aiPowered: false,
         modelUsed: 'DonorConnect Clinical Safety Engine',
-        notice: 'Clinical rule-based screening (Gemini offline or quota limit)',
+        notice: 'DEMONSTRATION FALLBACK � Gemini unavailable. Result is a deterministic prototype output, not a live AI response.',
         data: fallbackResult,
       });
     }
@@ -593,7 +885,7 @@ Simulate the calibrated prognostic curve, calculate exact SHAP attributions expl
         success: true,
         aiPowered: false,
         modelUsed: 'BioMatch ML Gradient-Boosted Prognostic Engine',
-        notice: 'Real-time biostatistical inference engine (CIBMTR/UNOS calibrated)',
+        notice: 'DEMONSTRATION FALLBACK � Gemini unavailable. Result is a demonstration output, not real biostatistical inference.',
         data: fallbackResult,
       });
     }
@@ -686,7 +978,7 @@ Perform deep optical analysis:
       success: true,
       aiPowered: false,
       modelUsed: 'BioVision Optical Inspection Engine',
-      notice: 'Calibrated optical morphometric inspection',
+      notice: 'DEMONSTRATION FALLBACK � Gemini unavailable. Result is a demonstration output, not a real specimen analysis.',
       data: fallbackResult,
     });
   } catch (error: any) {
@@ -794,218 +1086,49 @@ app.post('/api/ai/semantic-embeddings', async (req, res) => {
 });
 
 // -------------------------------------------------------------
-// ENDPOINT 10: AI Maps Grounding for Cancer Hospitals (gemini-3.5-flash with googleMaps tool)
+// EXTERNAL API ADAPTER: e-RaktKosh (MoHFW Blood Bank Platform)
 // -------------------------------------------------------------
-app.post('/api/ai/maps-grounding-cancer-hospitals', async (req, res) => {
-  try {
-    const { query, region } = req.body;
-    const targetSearch = (query || region || 'leading cancer hospital and transplant oncology centers worldwide').trim();
+// IMPORTANT: e-RaktKosh does NOT provide a public REST API.
+// Integration requires institutional credentials issued by MoHFW to licensed blood banks.
+// This adapter is architecturally ready for future integration when authorization is obtained.
+// Contact: mraktkosh@gmail.com | Portal: https://eraktkosh.mohfw.gov.in
+// Phone: +91 120 306 3311
+app.get('/api/external/eraktkosh', (_req, res) => {
+  const eraktkoshApiAvailable = !!process.env.ERAKTKOSH_INSTITUTION_TOKEN && !!process.env.ERAKTKOSH_HOSPITAL_CODE;
 
-    if (!ai) {
-      return res.json({
-        success: true,
-        aiPowered: false,
-        groundedWithMaps: false,
-        message: 'Loaded verified global cancer hospital dataset (API key not configured)',
-        data: {
-          searchQuery: targetSearch,
-          hospitalsFound: getSimulatedCancerHospitals(targetSearch)
-        }
-      });
-    }
-
-    try {
-      // Prompt using gemini-3.5-flash with googleMaps tool as strictly required by prompt
-      const prompt = `Search Google Maps for verified cancer hospitals, oncology institutes, or cancer transplant centers in "${targetSearch}".
-For each hospital found, provide accurate details:
-1. Hospital name
-2. Full street address, city, country
-3. Approximate latitude and longitude coordinates
-4. Key oncology services (e.g. bone marrow transplant, pediatric cancer wigs, chemotherapy, radiation, apheresis blood bank)
-5. Direct contact phone number
-6. Brief 1-2 sentence clinical summary.
-
-Output in clean JSON matching:
-{
-  "searchQuery": "${targetSearch}",
-  "hospitalsFound": [
-    {
-      "name": string,
-      "address": string,
-      "city": string,
-      "country": string,
-      "latitude": number,
-      "longitude": number,
-      "specialties": [string],
-      "phone": string,
-      "summary": string
-    }
-  ]
-}`;
-
-      const response = await ai.models.generateContent({
-        model: 'gemini-3.5-flash',
-        contents: prompt,
-        config: {
-          tools: [{ googleMaps: {} }],
-        }
-      });
-
-      const responseText = response.text || '';
-      let parsed = null;
-      try {
-        const jsonMatch = responseText.match(/\{[\s\S]*\}/);
-        if (jsonMatch) {
-          parsed = JSON.parse(jsonMatch[0]);
-        }
-      } catch (parseErr) {
-        console.warn('[DonorConnect AI] Could not parse JSON from maps response:', parseErr);
-      }
-
-      if (parsed && parsed.hospitalsFound && parsed.hospitalsFound.length > 0) {
-        return res.json({
-          success: true,
-          aiPowered: true,
-          groundedWithMaps: true,
-          modelUsed: 'gemini-3.5-flash (Google Maps Tool)',
-          data: parsed
-        });
-      }
-
-      // If model returned text without structured array, deliver enhanced simulated result
-      return res.json({
-        success: true,
-        aiPowered: true,
-        groundedWithMaps: true,
-        modelUsed: 'gemini-3.5-flash (Google Maps Tool)',
-        data: {
-          searchQuery: targetSearch,
-          rawNarrative: responseText,
-          hospitalsFound: getSimulatedCancerHospitals(targetSearch)
-        }
-      });
-    } catch (modelErr: any) {
-      console.warn('[DonorConnect AI] Maps grounding call fallback:', modelErr?.message || modelErr);
-      return res.json({
-        success: true,
-        aiPowered: false,
-        groundedWithMaps: false,
-        notice: 'Using verified clinical oncology hospital database (Maps Grounding rate limit/fallback)',
-        data: {
-          searchQuery: targetSearch,
-          hospitalsFound: getSimulatedCancerHospitals(targetSearch)
-        }
-      });
-    }
-  } catch (error: any) {
-    console.error('[DonorConnect AI] Error in maps-grounding-cancer-hospitals:', error);
-    res.status(500).json({ error: error.message || 'Internal server error' });
+  if (eraktkoshApiAvailable) {
+    // Future: make actual HTTP request to e-RaktKosh when credentials are available
+    // The endpoint and headers below are based on e-RaktKosh BBMS integration documentation
+    // Example real request would be:
+    // POST https://eraktkosh.mohfw.gov.in/BLDAHIMS/bloodbank/transactions/bbwl.thtml
+    // Headers: Authorization: Bearer <token>, X-Hospital-Code: <code>
+    // This block would be replaced with actual fetch() call once credentials are issued
+    res.json({
+      source: 'e-RaktKosh (Ministry of Health & Family Welfare, India)',
+      integrationStatus: 'credentials_present_but_live_request_not_yet_implemented',
+      note: 'Credentials detected. To complete integration, implement the actual HTTP request to the e-RaktKosh BBMS endpoint.',
+      lastChecked: new Date().toISOString()
+    });
+  } else {
+    // No credentials — report adapter status honestly
+    res.json({
+      source: 'e-RaktKosh (Ministry of Health & Family Welfare, India)',
+      integrationStatus: 'pending_institutional_authorization',
+      reason: 'e-RaktKosh does not provide a public REST API. Integration requires institutional credentials from MoHFW, issued only to licensed blood banks and healthcare institutions.',
+      officialPortal: 'https://eraktkosh.mohfw.gov.in',
+      contactForIntegration: 'mraktkosh@gmail.com',
+      phone: '+91 120 306 3311',
+      adapterArchitecture: {
+        description: 'This adapter is architecturally ready. Once MoHFW issues credentials, replace this response with a real HTTP request.',
+        endpointPlaceholder: 'POST https://eraktkosh.mohfw.gov.in/BLDAHIMS/bloodbank/transactions/bbwl.thtml',
+        requiredEnvVars: ['ERAKTKOSH_INSTITUTION_TOKEN', 'ERAKTKOSH_HOSPITAL_CODE'],
+        expectedResponseFields: ['bloodBankCode', 'bloodGroup', 'componentType', 'unitsAvailable', 'lastUpdated'],
+        implementWhen: 'MoHFW grants institutional access to Dofi as a registered healthcare coordination platform'
+      },
+      lastChecked: new Date().toISOString()
+    });
   }
 });
-
-// Helper for simulated fallback matching
-function getSimulatedCancerHospitals(query: string) {
-  const q = query.toLowerCase();
-  const allCenters = [
-    {
-      name: 'MD Anderson Cancer Center',
-      address: '1515 Holcombe Blvd, Houston, TX 77030',
-      city: 'Houston',
-      country: 'United States',
-      latitude: 29.7071,
-      longitude: -95.3972,
-      specialties: ['Bone Marrow Transplant', 'CAR-T Cell Therapy', 'Apheresis Platelets', 'Pediatric Oncology'],
-      phone: '+1 (713) 792-6161',
-      summary: 'Ranked #1 cancer hospital in the United States, operating comprehensive leukemia stem cell banks.'
-    },
-    {
-      name: 'Memorial Sloan Kettering Cancer Center',
-      address: '1275 York Ave, New York, NY 10065',
-      city: 'New York',
-      country: 'United States',
-      latitude: 40.7641,
-      longitude: -73.9566,
-      specialties: ['Pediatric Wigs & Oncology', 'Allogeneic Stem Cells', 'Immunotherapy', 'Blood Depository'],
-      phone: '+1 (212) 639-2000',
-      summary: 'Pioneering cancer center in NYC renowned for pediatric sarcoma care, bone marrow allografts, and patient support.'
-    },
-    {
-      name: 'Princess Margaret Cancer Centre',
-      address: '610 University Ave, Toronto, ON M5G 2M9',
-      city: 'Toronto',
-      country: 'Canada',
-      latitude: 43.6586,
-      longitude: -79.3905,
-      specialties: ['Stem Cell Transplant', 'Whole Blood Apheresis', 'Head & Neck Cancer', 'Cranial Prosthetics'],
-      phone: '+1 (416) 946-4501',
-      summary: 'Top cancer hospital in Canada with leading unrelated bone marrow registries and clinical trial facilities.'
-    },
-    {
-      name: 'Gustave Roussy Cancer Campus',
-      address: '114 Rue Edouard Vaillant, 94805 Villejuif',
-      city: 'Paris',
-      country: 'France',
-      latitude: 48.7947,
-      longitude: 2.3486,
-      specialties: ['European Bone Marrow Network', 'Pediatric Oncology', 'Cell Therapy', 'Apheresis Units'],
-      phone: '+33 1 42 11 42 11',
-      summary: 'Premier European comprehensive cancer institute leading international oncology cellular transplant protocols.'
-    },
-    {
-      name: 'National Cancer Center Hospital Tokyo',
-      address: '5-1-1 Tsukiji, Chuo-ku, Tokyo 104-0045',
-      city: 'Tokyo',
-      country: 'Japan',
-      latitude: 35.6664,
-      longitude: 139.7712,
-      specialties: ['Cord Blood Transplant', 'Platelet Apheresis', 'Robotic Surgical Oncology', 'Genomic Medicine'],
-      phone: '+81 3-3542-2511',
-      summary: 'Flagship oncology institution in Asia with unmatched survival rates in GI and hematologic oncology.'
-    },
-    {
-      name: 'Tata Memorial Centre',
-      address: 'Dr E Borges Road, Parel, Mumbai 400012',
-      city: 'Mumbai',
-      country: 'India',
-      latitude: 19.0068,
-      longitude: 72.8437,
-      specialties: ['Pediatric Leukemia & Hair Guild', 'DATRI Bone Marrow Partner', 'Voluntary Platelet Drives'],
-      phone: '+91 22 2417 7000',
-      summary: 'Treats over 160,000 patients annually with extensive voluntary apheresis and bone marrow registries.'
-    },
-    {
-      name: 'Peter MacCallum Cancer Centre',
-      address: '305 Grattan St, Melbourne VIC 3000',
-      city: 'Melbourne',
-      country: 'Australia',
-      latitude: -37.7983,
-      longitude: 144.9566,
-      specialties: ['CAR-T Cell Therapy', 'Australian Marrow Registry', 'Lifeblood Apheresis', 'Sarcoma Immunology'],
-      phone: '+61 3 8559 5000',
-      summary: 'Australia’s only public cancer hospital, leader in advanced cellular therapy and national marrow allografts.'
-    },
-    {
-      name: 'Hospital de Amor',
-      address: 'R. Antenor Duarte Villela 1331, Barretos, SP 14784-400',
-      city: 'Barretos',
-      country: 'Brazil',
-      latitude: -20.5574,
-      longitude: -48.5678,
-      specialties: ['Pediatric Cancer Wigs', 'REDOME Marrow Registry', 'Voluntary Hemotherapy', 'Mobile Prevention'],
-      phone: '+55 17 3321 6600',
-      summary: 'Latin America’s largest 100% free philanthropic cancer hospital with active pediatric cranial hair workshops.'
-    }
-  ];
-
-  const matched = allCenters.filter(c =>
-    c.name.toLowerCase().includes(q) ||
-    c.city.toLowerCase().includes(q) ||
-    c.country.toLowerCase().includes(q) ||
-    c.specialties.some(s => s.toLowerCase().includes(q))
-  );
-
-  return matched.length > 0 ? matched : allCenters.slice(0, 5);
-}
 
 // -------------------------------------------------------------
 // HEALTH CHECK
@@ -1079,145 +1202,6 @@ setupApp();
 // ROBUST CLINICAL ENGINE FALLBACK HELPERS
 // (Ensures zero downtime even during API quota exhaustion or offline testing)
 // =============================================================
-
-function generateClinicalCrossmatchFallback(request: any, donor: any) {
-  const isBlood = request.category === 'blood';
-  const isOrgan = request.category === 'organ';
-  const isMarrow = request.category === 'bone_tissue';
-  const isHair = request.category === 'hair';
-
-  let score = 92;
-  let riskLevel: 'OPTIMAL' | 'ACCEPTABLE' | 'ELEVATED_RISK' | 'HIGH_RISK_INCOMPATIBLE' = 'OPTIMAL';
-  let riskBadge = 'Optimal Clinical Compatibility';
-  let headline = `High-Probability Clinical Match for ${request.title}`;
-
-  const params = [];
-
-  if (isBlood) {
-    const reqBlood = request.bloodRequirements?.targetBloodGroup || 'O+';
-    const donBlood = donor.bloodDetails?.bloodGroup || 'O+';
-    const isExact = reqBlood === donBlood;
-    score = isExact ? 98 : 88;
-    riskLevel = isExact ? 'OPTIMAL' : 'ACCEPTABLE';
-    params.push({
-      parameter: 'ABO / Rh Compatibility',
-      status: 'pass',
-      donorValue: donBlood,
-      recipientRequirement: reqBlood,
-      clinicalImplication: isExact
-        ? 'Isogroup match: zero risk of isohemagglutinin-mediated acute hemolytic reaction.'
-        : 'Compatible blood type: minor crossmatch screening indicated prior to unit release.'
-    });
-    params.push({
-      parameter: 'Infectious Disease Serology (ELISA/NAT)',
-      status: 'pass',
-      donorValue: 'Non-reactive for HIV-1/2, HCV, HBV, HTLV, Syphilis',
-      recipientRequirement: 'FDA Seronegative Clearance',
-      clinicalImplication: 'Donor serology profile cleared for clinical transfusion.'
-    });
-    params.push({
-      parameter: 'Apheresis Platelet / Unit Yield',
-      status: 'pass',
-      donorValue: `${donor.bloodDetails?.hemoglobinLevel || '14.2'} g/dL Hgb`,
-      recipientRequirement: 'Min 12.5 g/dL',
-      clinicalImplication: 'Optimal donor hemoglobin reserves ensure safe donation volume extraction.'
-    });
-  } else if (isOrgan) {
-    score = 91;
-    riskLevel = 'OPTIMAL';
-    params.push({
-      parameter: 'Calculated PRA (Panel Reactive Antibodies)',
-      status: 'pass',
-      donorValue: '0% HLA Class I/II Sensitization',
-      recipientRequirement: '< 20% PRA Threshold',
-      clinicalImplication: 'Low immunologic pre-sensitization: virtual crossmatch strongly negative.'
-    });
-    params.push({
-      parameter: 'Donor-Recipient Anthropometrics (BMI & Age Ratio)',
-      status: 'pass',
-      donorValue: 'BMI 24.1 (Age: 32)',
-      recipientRequirement: `Recipient Age ${request.patientAge || 38}`,
-      clinicalImplication: 'Graft parenchymal volume matches metabolic clearance requirements.'
-    });
-    params.push({
-      parameter: 'Cold Ischemia Transit Tolerance',
-      status: 'pass',
-      donorValue: `${donor.distanceKm || 14} km radius (~22 mins transit)`,
-      recipientRequirement: 'Max 24-36 hrs cold storage window',
-      clinicalImplication: 'Transit time well within cellular viability parameters using UW/Custodiol preservation solution.'
-    });
-  } else if (isMarrow) {
-    score = 95;
-    riskLevel = 'OPTIMAL';
-    params.push({
-      parameter: 'High-Resolution HLA Allele Match (10/10 Loci)',
-      status: 'pass',
-      donorValue: 'A*02:01, B*07:02, C*07:02, DRB1*15:01, DQB1*06:02',
-      recipientRequirement: 'Full Locus Match Protocol',
-      clinicalImplication: 'High-probability 10/10 high-resolution match minimizes acute and chronic GvHD risk.'
-    });
-    params.push({
-      parameter: 'Donor Cellular Vitality (Age Factor)',
-      status: 'pass',
-      donorValue: 'Registered Donor (Age < 35)',
-      recipientRequirement: 'NMDP Preferred Age 18-35',
-      clinicalImplication: 'Superior CD34+ stem cell harvesting yield and faster neutrophil engraftment kinetics.'
-    });
-  } else {
-    score = 96;
-    riskLevel = 'OPTIMAL';
-    params.push({
-      parameter: 'Hair Length Verification',
-      status: 'pass',
-      donorValue: `${donor.hairDetails?.lengthInches || 12} inches clean bundled`,
-      recipientRequirement: `Min ${request.hairRequirements?.minInches || 10} inches required`,
-      clinicalImplication: 'Sufficient length for hand-tied pediatric cranial prosthetic foundation.'
-    });
-    params.push({
-      parameter: 'Chemical Treatment Status',
-      status: 'pass',
-      donorValue: donor.hairDetails?.condition === 'virgin_untreated' ? 'Virgin / Non-bleached' : 'Safe condition',
-      recipientRequirement: 'No bleach or harsh chemical processing',
-      clinicalImplication: 'Preserves cuticle integrity for sensitive pediatric scalp prosthetics.'
-    });
-  }
-
-  return {
-    compatibilityScore: score,
-    riskLevel,
-    riskBadge,
-    clinicalHeadline: headline,
-    clinicalSummary: `Comprehensive clinical evaluation confirms high suitability between recipient (${request.patientAlias}) and registered donor (${donor.donorName}). Standard pre-transfusion/infusion screening protocols apply.`,
-    patientExplanation: `Great news: this donor is an excellent match for your request! The clinical requirements align smoothly with high safety metrics and low immunologic risk.`,
-    parametersAnalysis: params,
-    hlaBreakdown: {
-      applicable: isOrgan || isMarrow,
-      totalMatchScore: isMarrow ? '10/10 Allele Match' : '6/6 Antigen Match',
-      gvhdRisk: 'Low',
-      locusMatches: [
-        { locus: 'HLA-A', donorAllele: '02:01', recipientAllele: '02:01', matchStatus: 'exact_match' },
-        { locus: 'HLA-B', donorAllele: '07:02', recipientAllele: '07:02', matchStatus: 'exact_match' },
-        { locus: 'HLA-C', donorAllele: '07:02', recipientAllele: '07:02', matchStatus: 'exact_match' },
-        { locus: 'HLA-DRB1', donorAllele: '15:01', recipientAllele: '15:01', matchStatus: 'exact_match' },
-        { locus: 'HLA-DQB1', donorAllele: '06:02', recipientAllele: '06:02', matchStatus: 'exact_match' },
-      ],
-    },
-    coldIschemiaAnalysis: {
-      safeWindowHours: isBlood ? 42 : isOrgan ? 30 : isMarrow ? 48 : 720,
-      transitRiskTier: 'Low',
-      preservationProtocol: isOrgan
-        ? 'Hypothermic Machine Perfusion (HMP) at 4°C with Belzer MPS'
-        : 'Room-temperature continuous agitation (platelets) / 1-6°C CPD-A1 (RBCs)',
-    },
-    clinicalBoardRecommendations: [
-      'Order confirmatory prospective flow cytometric crossmatch (FCXM) prior to hospital admission.',
-      'Maintain standard universal precautions and temperature-monitored courier transport chain.',
-      'Ensure verified patient informed consent and regulatory UNOS/AABB documentation on file.',
-    ],
-    ethicalComplianceNote:
-      'Verified under National Organ Transplant Act (NOTA) & WHO Guiding Principles on Human Organ Transplantation. Zero commercial trade observed.',
-  };
-}
 
 function generateEligibilityFallback(data: any) {
   const { category, donorAge, weightLbs, hemoglobin, tattoosPiercingsMonthsAgo, hairLengthInches, hairTreated } = data;

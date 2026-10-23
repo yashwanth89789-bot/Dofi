@@ -18,10 +18,15 @@ import {
   getDocs,
   query,
   orderBy,
+  where,
   onSnapshot,
   Timestamp
 } from 'firebase/firestore';
 import firebaseConfig from '../../firebase-applet-config.json';
+
+// Log the Firebase project being used at startup (development aid)
+console.log('[Firebase] Initializing with project:', firebaseConfig.projectId);
+console.log('[Firebase] Auth domain:', firebaseConfig.authDomain);
 
 // Initialize Firebase App
 export const app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig);
@@ -29,14 +34,14 @@ export const app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfi
 // Initialize Firebase Auth
 export const auth = getAuth(app);
 export const googleProvider = new GoogleAuthProvider();
+googleProvider.addScope('email');
+googleProvider.addScope('profile');
 googleProvider.setCustomParameters({ prompt: 'select_account' });
 
-// Initialize Firestore with custom Database ID
-export const db = firebaseConfig.firestoreDatabaseId
-  ? getFirestore(app, firebaseConfig.firestoreDatabaseId)
-  : getFirestore(app);
+// Initialize Firestore — using default database for dofi-healthcare-platform
+export const db = getFirestore(app);
 
-// Connection verification test as specified by Firebase Skill
+// Connection verification test
 export async function testConnection(): Promise<boolean> {
   try {
     await getDocFromServer(doc(db, 'test', 'connection'));
@@ -57,9 +62,10 @@ export interface RegisteredAppUser {
   email: string;
   displayName: string;
   photoURL?: string;
-  role: 'donor' | 'recipient' | 'hospital_staff' | 'admin';
+  role: 'user' | 'donor' | 'hospital' | 'admin' | 'hospital_staff';
   isVerified: boolean;
   donationsRegisteredCount: number;
+  organizationId?: string;
   createdAt: string;
   lastLoginAt: string;
   provider: string;
@@ -86,50 +92,120 @@ export interface FirebaseDonationRegistration {
 }
 
 /**
- * Sign in using Google Auth and synchronize user record into Firestore `users` collection.
+ * Sign in using Google Auth popup.
+ *
+ * IMPORTANT: This function ONLY handles the OAuth popup.
+ * Firestore user record sync is handled separately in onAuthStateChanged (AppContext).
+ * This prevents Firestore permission errors from breaking the auth flow.
  */
-export async function signInWithGoogle(): Promise<RegisteredAppUser> {
-  const result = await signInWithPopup(auth, googleProvider);
-  const fbUser = result.user;
+export async function signInWithGoogle(): Promise<FirebaseUser> {
+  console.log('[Firebase Auth] Starting Google Sign-In popup...');
+  console.log('[Firebase Auth] Project:', firebaseConfig.projectId);
+  console.log('[Firebase Auth] Auth domain:', firebaseConfig.authDomain);
 
+  try {
+    const result = await signInWithPopup(auth, googleProvider);
+    console.log('[Firebase Auth] Sign-in popup completed successfully.');
+    console.log('[Firebase Auth] User UID:', result.user.uid);
+    console.log('[Firebase Auth] User email:', result.user.email);
+    console.log('[Firebase Auth] User displayName:', result.user.displayName);
+    return result.user;
+  } catch (error: unknown) {
+    // Surface the full error — never swallow it silently
+    const firebaseError = error as { code?: string; message?: string };
+    console.error('[Firebase Auth] ❌ Google Sign-In FAILED');
+    console.error('[Firebase Auth] Error code:', firebaseError?.code || 'unknown');
+    console.error('[Firebase Auth] Error message:', firebaseError?.message || String(error));
+
+    // Provide actionable guidance for known error codes
+    if (firebaseError?.code === 'auth/popup-closed-by-user') {
+      console.warn('[Firebase Auth] User closed the popup before completing sign-in.');
+    } else if (firebaseError?.code === 'auth/popup-blocked') {
+      console.error('[Firebase Auth] Popup was blocked by the browser. Enable popups for localhost:3000.');
+    } else if (firebaseError?.code === 'auth/operation-not-allowed') {
+      console.error('[Firebase Auth] Google Sign-In provider is NOT enabled in Firebase Console.');
+      console.error('[Firebase Auth] → Go to: https://console.firebase.google.com/project/dofi-healthcare-platform/authentication/providers');
+      console.error('[Firebase Auth] → Enable "Google" as a sign-in provider.');
+    } else if (firebaseError?.code === 'auth/unauthorized-domain') {
+      console.error('[Firebase Auth] This domain is not authorized for Google Sign-In.');
+      console.error('[Firebase Auth] → Go to: https://console.firebase.google.com/project/dofi-healthcare-platform/authentication/settings');
+      console.error('[Firebase Auth] → Add "localhost" to the Authorized Domains list.');
+    } else if (firebaseError?.code === 'auth/configuration-not-found') {
+      console.error('[Firebase Auth] Firebase Auth configuration not found for this project.');
+      console.error('[Firebase Auth] → Ensure Google provider is enabled in Firebase Console.');
+    }
+
+    throw error;
+  }
+}
+
+/**
+ * Sync or create a Firestore user record after successful Firebase Auth.
+ * Called from AppContext onAuthStateChanged — AFTER the popup completes.
+ */
+export async function syncUserToFirestore(fbUser: FirebaseUser): Promise<RegisteredAppUser> {
   const userDocRef = doc(db, 'users', fbUser.uid);
-  const existingSnap = await getDoc(userDocRef);
-
   const nowIso = new Date().toISOString();
+  const isAuthorizedAdminEmail = fbUser.email === 'mohammedayaan9683@gmail.com';
 
-  let appUser: RegisteredAppUser;
+  try {
+    const existingSnap = await getDoc(userDocRef);
 
-  if (existingSnap.exists()) {
-    const data = existingSnap.data() as RegisteredAppUser;
-    appUser = {
-      ...data,
-      displayName: fbUser.displayName || data.displayName || 'Registered User',
-      email: fbUser.email || data.email,
-      photoURL: fbUser.photoURL || data.photoURL,
-      lastLoginAt: nowIso
-    };
-    await updateDoc(userDocRef, {
-      displayName: appUser.displayName,
-      photoURL: appUser.photoURL,
-      lastLoginAt: nowIso
-    });
-  } else {
-    appUser = {
+    if (existingSnap.exists()) {
+      const data = existingSnap.data() as RegisteredAppUser;
+      const resolvedRole: RegisteredAppUser['role'] = isAuthorizedAdminEmail ? 'admin' : (data.role || 'donor');
+      const appUser: RegisteredAppUser = {
+        ...data,
+        role: resolvedRole,
+        displayName: fbUser.displayName || data.displayName || (isAuthorizedAdminEmail ? 'Platform Administrator' : 'Registered User'),
+        email: fbUser.email || data.email,
+        photoURL: fbUser.photoURL || data.photoURL,
+        lastLoginAt: nowIso
+      };
+      const updatePayload: Record<string, unknown> = {
+        displayName: appUser.displayName,
+        photoURL: appUser.photoURL,
+        lastLoginAt: nowIso
+      };
+      if (data.role !== resolvedRole) {
+        updatePayload.role = resolvedRole;
+      }
+      await updateDoc(userDocRef, updatePayload).catch(e => console.warn('[Firebase] Could not update userDoc:', e));
+      console.log('[Firebase] Existing user record updated:', appUser.id, 'role:', appUser.role);
+      return appUser;
+    } else {
+      const appUser: RegisteredAppUser = {
+        id: fbUser.uid,
+        email: fbUser.email || '',
+        displayName: fbUser.displayName || (isAuthorizedAdminEmail ? 'Platform Administrator' : 'Registered Community Member'),
+        photoURL: fbUser.photoURL || undefined,
+        role: isAuthorizedAdminEmail ? 'admin' : 'donor',
+        isVerified: true,
+        donationsRegisteredCount: 0,
+        createdAt: nowIso,
+        lastLoginAt: nowIso,
+        provider: 'google'
+      };
+      await setDoc(userDocRef, appUser);
+      console.log('[Firebase] New user record created:', appUser.id, 'role:', appUser.role);
+      return appUser;
+    }
+  } catch (error) {
+    console.warn('[Firebase] Firestore user sync error (auth still succeeded):', error);
+    // Return a minimal user record based on Firebase Auth data — don't break auth
+    return {
       id: fbUser.uid,
-      email: fbUser.email || 'user@donorconnect4care.org',
-      displayName: fbUser.displayName || 'Registered Community Member',
+      email: fbUser.email || '',
+      displayName: fbUser.displayName || (isAuthorizedAdminEmail ? 'Platform Administrator' : 'Registered User'),
       photoURL: fbUser.photoURL || undefined,
-      role: 'donor',
-      isVerified: true,
+      role: isAuthorizedAdminEmail ? 'admin' : 'donor',
+      isVerified: isAuthorizedAdminEmail,
       donationsRegisteredCount: 0,
       createdAt: nowIso,
       lastLoginAt: nowIso,
       provider: 'google'
     };
-    await setDoc(userDocRef, appUser);
   }
-
-  return appUser;
 }
 
 /**
@@ -201,3 +277,53 @@ export async function fetchDonationRegistrations(): Promise<FirebaseDonationRegi
     return [];
   }
 }
+
+/**
+ * Save or update a donor response record in Firestore `donor_responses`
+ */
+export async function saveDonorResponseToFirestore(response: {
+  id: string;
+  requestId: string;
+  donorId: string;
+  donorUserId: string;
+  donorName: string;
+  bloodGroup: string;
+  city?: string;
+  status: 'available' | 'confirmed' | 'fulfilled' | 'cancelled';
+  createdAt: string;
+  updatedAt: string;
+  note?: string;
+  hospitalId?: string;
+  requesterId?: string;
+}): Promise<void> {
+  const docRef = doc(db, 'donor_responses', response.id);
+  await setDoc(docRef, response);
+}
+
+/**
+ * Fetch donor responses from Firestore with optional security-scoped filter
+ */
+export async function fetchDonorResponses(filter?: {
+  donorUserId?: string;
+  hospitalId?: string;
+  requesterId?: string;
+}): Promise<any[]> {
+  try {
+    let q;
+    if (filter?.donorUserId) {
+      q = query(collection(db, 'donor_responses'), where('donorUserId', '==', filter.donorUserId));
+    } else if (filter?.hospitalId) {
+      q = query(collection(db, 'donor_responses'), where('hospitalId', '==', filter.hospitalId));
+    } else if (filter?.requesterId) {
+      q = query(collection(db, 'donor_responses'), where('requesterId', '==', filter.requesterId));
+    } else {
+      q = query(collection(db, 'donor_responses'), orderBy('createdAt', 'desc'));
+    }
+    const snapshot = await getDocs(q);
+    return snapshot.docs.map(d => d.data());
+  } catch (err) {
+    console.warn('[Firebase] fetchDonorResponses error:', err);
+    return [];
+  }
+}
+

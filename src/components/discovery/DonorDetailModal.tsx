@@ -14,12 +14,18 @@ import {
   X,
   CheckCircle2,
   FileCheck2,
-  AlertTriangle,
-  Sparkles
+  AlertTriangle
 } from 'lucide-react';
 import { DonorProfile } from '../../types';
 import { useApp } from '../../context/AppContext';
 import { DonationScheduler } from './DonationScheduler';
+
+const cleanLocation = (city?: string, state?: string): string => {
+  if (!city || ['chicago', 'evanston', 'cicero', 'skokie', 'naperville'].includes(city.trim().toLowerCase())) {
+    return 'Hyderabad, Telangana';
+  }
+  return `${city}${state ? `, ${state}` : ''}`;
+};
 
 interface DonorDetailModalProps {
   donor: DonorProfile | null;
@@ -27,7 +33,7 @@ interface DonorDetailModalProps {
 }
 
 export const DonorDetailModal: React.FC<DonorDetailModalProps> = ({ donor, onClose }) => {
-  const { setReportingTarget, setIsReportModalOpen, currentUser, openAiWithDonor } = useApp();
+  const { setReportingTarget, setIsReportModalOpen, currentUser } = useApp();
   const [connectMessageSent, setConnectMessageSent] = useState(false);
 
   if (!donor) return null;
@@ -76,7 +82,7 @@ export const DonorDetailModal: React.FC<DonorDetailModalProps> = ({ donor, onClo
               </div>
               <div className="flex items-center gap-2 text-xs text-slate-500 mt-0.5">
                 <MapPin className="h-3 w-3 text-slate-400" />
-                <span>{donor.city}, {donor.state}</span>
+                <span>{cleanLocation(donor.city, donor.state)}</span>
                 <span>·</span>
                 <span className="font-mono text-emerald-700 font-medium">{donor.distanceKm} km away</span>
               </div>
@@ -115,11 +121,11 @@ export const DonorDetailModal: React.FC<DonorDetailModalProps> = ({ donor, onClo
           </div>
 
           {/* Verification Badge Details */}
-          <div className="p-3 bg-teal-50/60 border border-teal-200/80 rounded-lg flex items-center gap-2.5 text-teal-900">
-            <FileCheck2 className="h-4 w-4 text-teal-600 shrink-0" />
+          <div className="p-3 bg-amber-50/60 border border-amber-200/80 rounded-lg flex items-center gap-2.5 text-amber-900">
+            <FileCheck2 className="h-4 w-4 text-amber-600 shrink-0" />
             <div>
-              <div className="font-bold text-[11px] text-teal-950">Clinical Verification Status</div>
-              <div className="text-[11px] text-teal-800">{donor.verificationBadge}</div>
+              <div className="font-bold text-[11px] text-amber-800">Sample Donor Status (Demo Data)</div>
+              <div className="text-[11px] text-amber-700">{donor.verificationBadge}</div>
             </div>
           </div>
 
@@ -157,80 +163,6 @@ export const DonorDetailModal: React.FC<DonorDetailModalProps> = ({ donor, onClo
               </div>
             )}
 
-            {donor.organDetails && (
-              <div className="p-3.5 rounded-lg border border-teal-200 bg-teal-50/30 space-y-2">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-1.5 font-bold text-teal-900 text-xs">
-                    <Heart className="h-4 w-4 text-teal-600" />
-                    <span>Organ Pledge & Registry Link</span>
-                  </div>
-                  <span className="text-[10px] font-mono text-teal-700 bg-teal-100 px-1.5 py-0.5 rounded">
-                    Registry Ref: {donor.organDetails.transplantCenterRegistryId}
-                  </span>
-                </div>
-                <p className="text-[11px] text-slate-600">
-                  <strong className="text-slate-800">Pledged Organs:</strong>{' '}
-                  {donor.organDetails.organsPledged.map(o => o.replace('_', ' ')).join(', ')}
-                </p>
-                <p className="text-[10px] text-teal-800 bg-teal-100/50 p-2 rounded border border-teal-200/60">
-                  Non-Commercial Mandate: Organ matches are facilitated strictly through accredited transplant hospitals. Direct commercial solicitation is illegal under NOTA.
-                </p>
-              </div>
-            )}
-
-            {donor.boneTissueDetails && (
-              <div className="p-3.5 rounded-lg border border-indigo-200 bg-indigo-50/30 space-y-2">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-1.5 font-bold text-indigo-900 text-xs">
-                    <Bone className="h-4 w-4 text-indigo-600" />
-                    <span>Bone Marrow & Tissue Registry</span>
-                  </div>
-                  <span className="text-[10px] font-semibold text-emerald-700 bg-emerald-50 px-1.5 py-0.5 rounded border border-emerald-200">
-                    Swab Kit: {donor.boneTissueDetails.swabKitStatus.toUpperCase()}
-                  </span>
-                </div>
-                <div className="text-[11px] text-slate-600">
-                  <span className="text-slate-400">Available Tissues:</span>{' '}
-                  <span className="font-medium text-slate-800 capitalize">
-                    {donor.boneTissueDetails.tissueTypes.map(t => t.replace('_', ' ')).join(', ')}
-                  </span>
-                </div>
-                <div className="text-[11px] text-slate-600">
-                  <span className="text-slate-400">Registry ID:</span>{' '}
-                  <span className="font-mono text-indigo-700 font-medium">
-                    {donor.boneTissueDetails.marrowRegistryId}
-                  </span>
-                </div>
-              </div>
-            )}
-
-            {donor.hairDetails && (
-              <div className="p-3.5 rounded-lg border border-amber-200 bg-amber-50/30 space-y-2">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-1.5 font-bold text-amber-900 text-xs">
-                    <Scissors className="h-4 w-4 text-amber-600" />
-                    <span>Hair Donation Specifications</span>
-                  </div>
-                  <span className="text-[10px] font-mono font-bold text-amber-900 bg-amber-100 px-2 py-0.5 rounded">
-                    {donor.hairDetails.lengthInches} Inches
-                  </span>
-                </div>
-                <div className="grid grid-cols-2 gap-2 text-[11px] text-slate-600">
-                  <div>
-                    <span className="text-slate-400">Condition:</span>{' '}
-                    <span className="font-medium text-slate-800 capitalize">
-                      {donor.hairDetails.condition.replace('_', ' ')}
-                    </span>
-                  </div>
-                  <div>
-                    <span className="text-slate-400">Color / Texture:</span>{' '}
-                    <span className="font-medium text-slate-800 capitalize">
-                      {donor.hairDetails.color} ({donor.hairDetails.texture})
-                    </span>
-                  </div>
-                </div>
-              </div>
-            )}
           </div>
 
           {/* Donation Procedure Scheduler Feature */}
@@ -241,7 +173,7 @@ export const DonorDetailModal: React.FC<DonorDetailModalProps> = ({ donor, onClo
             <Lock className="h-4 w-4 text-slate-400 shrink-0 mt-0.5" />
             <div className="text-[11px] leading-relaxed">
               <span className="font-semibold text-slate-700">Patient Privacy Protection:</span>{' '}
-              This donor uses <strong className="text-slate-800 capitalize">{donor.privacySetting.replace('_', ' ')}</strong> mode. Phone number and full address remain protected until an authorized hospital coordinator approves the clinical cross-match.
+              This donor uses <strong className="text-slate-800 capitalize">{donor.privacySetting.replace('_', ' ')}</strong> mode. Phone number and full address remain protected until an authorized hospital coordinator approves the clinical donation contact.
             </div>
           </div>
         </div>
@@ -262,17 +194,6 @@ export const DonorDetailModal: React.FC<DonorDetailModalProps> = ({ donor, onClo
               className="px-3.5 py-2 text-xs font-semibold text-slate-600 hover:text-slate-800 rounded-lg cursor-pointer"
             >
               Close
-            </button>
-
-            <button
-              onClick={() => {
-                onClose();
-                openAiWithDonor(donor);
-              }}
-              className="px-3.5 py-2 bg-gradient-to-r from-teal-700 to-indigo-800 hover:from-teal-600 hover:to-indigo-700 text-white font-semibold text-xs rounded-lg transition-all inline-flex items-center gap-1.5 shadow-xs cursor-pointer"
-            >
-              <Sparkles className="h-3.5 w-3.5 text-teal-300" />
-              <span>AI Cross-Match</span>
             </button>
 
             {connectMessageSent ? (

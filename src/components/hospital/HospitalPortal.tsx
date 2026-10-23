@@ -1,624 +1,388 @@
-import React, { useState, useMemo, useEffect, useRef } from 'react';
+import React, { useMemo, useState } from 'react';
 import {
-  Building2,
-  ShieldCheck,
   AlertTriangle,
-  PlusCircle,
-  Clock,
-  UserCheck,
+  Building2,
   CheckCircle2,
-  FileText,
-  Search,
-  Users,
-  Activity,
-  ArrowRight,
-  Sparkles,
-  X,
-  Globe2,
-  PhoneCall,
-  ExternalLink,
+  Clock,
+  Droplet,
   MapPin,
+  ShieldCheck,
+  Users,
+  HeartHandshake,
   Check
 } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
 import { DonationRequest, RequestStatus } from '../../types';
-import {
-  WORLD_CANCER_HOSPITALS,
-  CancerHospital,
-  getCancerHospitalPortalName,
-  formatHospitalPortalNameFromQuery
-} from '../../data/cancerHospitalsData';
+
+const STATUS: Record<RequestStatus, string> = {
+  pending: 'PENDING VERIFICATION',
+  verified: 'ACTIVE',
+  matched: 'MATCHING',
+  in_progress: 'DONOR RESPONDED',
+  completed: 'FULFILLED',
+  cancelled: 'CANCELLED'
+};
+
+const rank = { emergency: 0, urgent: 1, standard: 2 };
 
 export const HospitalPortal: React.FC = () => {
   const {
     currentUser,
+    firebaseUser,
     organizations,
     requests,
+    firestoreRequests,
     donors,
     setSelectedRequest,
     setIsCreateRequestModalOpen,
+    computeMatchScore,
     updateRequestStatus,
-    openAiModule,
-    selectedCancerHospital,
-    setSelectedCancerHospital,
-    cancerHospitalSearchQuery,
-    setCancerHospitalSearchQuery
+    donorResponses,
+    updateDonorResponseStatus
   } = useApp();
 
-  const [activeSubTab, setActiveSubTab] = useState<'requisitions' | 'crossmatch' | 'facility'>('requisitions');
-  const [searchQuery, setSearchQuery] = useState(cancerHospitalSearchQuery || 'MD Anderson');
-  const [isSearchFocused, setIsSearchFocused] = useState(false);
-  const [labOrderSuccessNotice, setLabOrderSuccessNotice] = useState<string | null>(null);
-  const searchContainerRef = useRef<HTMLDivElement>(null);
+  const [requestView, setRequestView] = useState<'active' | 'fulfilled'>('active');
 
-  // Sync when cancerHospitalSearchQuery changes externally
-  useEffect(() => {
-    if (cancerHospitalSearchQuery && cancerHospitalSearchQuery !== searchQuery) {
-      setSearchQuery(cancerHospitalSearchQuery);
-    }
-  }, [cancerHospitalSearchQuery]);
+  const bloodHospitals = organizations.filter(item => !/(organ|bone|tissue|hair|cancer|oncology|transplant)/i.test(item.name));
+  const hospital = bloodHospitals.find(item => item.id === currentUser.organizationId) || bloodHospitals[0];
 
-  // Close dropdown on click outside
-  useEffect(() => {
-    const handleClickOutside = (e: MouseEvent) => {
-      if (searchContainerRef.current && !searchContainerRef.current.contains(e.target as Node)) {
-        setIsSearchFocused(false);
-      }
-    };
-    document.addEventListener('mousedown', handleClickOutside);
-    return () => document.removeEventListener('mousedown', handleClickOutside);
-  }, []);
+  const currentUserId = currentUser.id;
+  const firebaseUid = firebaseUser?.uid;
 
-  // Default base facility associated with current user
-  const defaultBaseHospital = organizations.find(o => o.id === currentUser.organizationId) || organizations[0];
-
-  // Matched cancer hospital based on typed or searched query
-  const matchedCancerHospital: CancerHospital | null = useMemo(() => {
-    const trimmed = searchQuery.trim().toLowerCase();
-    if (!trimmed) {
-      return selectedCancerHospital || null;
-    }
-    // Search by name, shortName, portalName, city, or country
-    const direct = WORLD_CANCER_HOSPITALS.find(h =>
-      h.name.toLowerCase().includes(trimmed) ||
-      h.shortName.toLowerCase().includes(trimmed) ||
-      (h.portalName && h.portalName.toLowerCase().includes(trimmed)) ||
-      h.city.toLowerCase().includes(trimmed) ||
-      h.country.toLowerCase().includes(trimmed)
-    );
-    if (direct) return direct;
-
-    // Check by specialty or keywords
-    const keywordMatch = WORLD_CANCER_HOSPITALS.find(h =>
-      h.oncologySpecialties.some(s => s.toLowerCase().includes(trimmed))
-    );
-    if (keywordMatch) return keywordMatch;
-
-    return null;
-  }, [searchQuery, selectedCancerHospital]);
-
-  // Autocomplete suggestions matching current input
-  const autocompleteSuggestions = useMemo(() => {
-    const trimmed = searchQuery.trim().toLowerCase();
-    if (!trimmed) return WORLD_CANCER_HOSPITALS.slice(0, 8);
-    return WORLD_CANCER_HOSPITALS.filter(h =>
-      h.name.toLowerCase().includes(trimmed) ||
-      h.shortName.toLowerCase().includes(trimmed) ||
-      (h.portalName && h.portalName.toLowerCase().includes(trimmed)) ||
-      h.city.toLowerCase().includes(trimmed) ||
-      h.country.toLowerCase().includes(trimmed) ||
-      h.oncologySpecialties.some(s => s.toLowerCase().includes(trimmed))
-    );
-  }, [searchQuery]);
-
-  // Automatically computed Hospital Portal Name
-  const activePortalName = useMemo(() => {
-    if (matchedCancerHospital) {
-      return getCancerHospitalPortalName(matchedCancerHospital);
-    }
-    if (searchQuery.trim()) {
-      return formatHospitalPortalNameFromQuery(searchQuery);
-    }
-    if (selectedCancerHospital) {
-      return getCancerHospitalPortalName(selectedCancerHospital);
-    }
-    return `${defaultBaseHospital.name} Hospital Portal`;
-  }, [matchedCancerHospital, searchQuery, selectedCancerHospital, defaultBaseHospital]);
-
-  // Active facility details
-  const displayLocation = matchedCancerHospital
-    ? `${matchedCancerHospital.city}${matchedCancerHospital.stateOrProvince ? `, ${matchedCancerHospital.stateOrProvince}` : ''}, ${matchedCancerHospital.country}`
-    : `${defaultBaseHospital.city}, ${defaultBaseHospital.state}`;
-
-  const displayRegulatory = matchedCancerHospital
-    ? matchedCancerHospital.accreditations
-    : `${defaultBaseHospital.regulatoryBody} · License: ${defaultBaseHospital.licenseNumber}`;
-
-  const displayCoordinators = matchedCancerHospital
-    ? `Dr. Rachel Vane, MD · Dr. Marcus Vance, MD (Oncology Coordination Desk)`
-    : defaultBaseHospital.activeCoordinators.join(', ');
-
-  const transplantDesk = matchedCancerHospital
-    ? matchedCancerHospital.emergencyTransplantDesk
-    : defaultBaseHospital.phone;
-
-  // Requisitions for this hospital
   const hospitalRequests = useMemo(() => {
-    if (matchedCancerHospital) {
-      // Return requests or oncology-aligned requisitions
-      return requests.slice(0, 4);
+    const combined = [...requests, ...(firestoreRequests as DonationRequest[])];
+    const uniqueMap = new Map<string, DonationRequest>();
+
+    for (const req of combined) {
+      if (!req) continue;
+      const id = (req.id || '').trim();
+      if (!id) continue;
+      if (req.category !== 'blood') continue;
+
+      const isForThisHospital =
+        req.hospitalId === hospital?.id ||
+        req.requesterId === currentUserId ||
+        (firebaseUid && req.requesterId === firebaseUid) ||
+        (currentUser.role === 'hospital' && (!req.hospitalId || req.hospitalId === 'hospital_pending'));
+
+      if (!isForThisHospital) continue;
+
+      // Deduplicate strictly by unique request ID
+      if (!uniqueMap.has(id)) {
+        uniqueMap.set(id, { ...req, id });
+      }
     }
-    return requests.filter(r => r.hospitalId === defaultBaseHospital.id || currentUser.role === 'admin');
-  }, [matchedCancerHospital, requests, defaultBaseHospital, currentUser]);
 
-  const handleSelectHospital = (hosp: CancerHospital) => {
-    setSearchQuery(hosp.shortName);
-    setCancerHospitalSearchQuery(hosp.shortName);
-    setSelectedCancerHospital(hosp);
-    setIsSearchFocused(false);
-  };
+    return Array.from(uniqueMap.values()).sort((a, b) => rank[a.urgency] - rank[b.urgency]);
+  }, [currentUserId, firebaseUid, firestoreRequests, hospital?.id, requests, currentUser.role]);
 
-  const handleClearSearch = () => {
-    setSearchQuery('');
-    setCancerHospitalSearchQuery('');
-    setSelectedCancerHospital(null);
-  };
+  const active = hospitalRequests.filter(request => !['completed', 'cancelled'].includes(request.status));
+  const emergencies = active.filter(request => request.urgency === 'emergency');
+  const fulfilled = hospitalRequests.filter(request => request.status === 'completed');
 
-  // Top quick-select cancer hospitals
-  const QUICK_CANCER_HOSPITALS = WORLD_CANCER_HOSPITALS.slice(0, 9);
+  const matches = active.flatMap(request =>
+    donors.map(donor => ({
+      request,
+      donor,
+      score: computeMatchScore(request, donor)
+    })).filter(item => item.score > 0)
+  ).sort((a, b) => b.score - a.score || rank[a.request.urgency] - rank[b.request.urgency]);
+
+  // Real donor responses for this hospital's requests
+  const hospitalResponses = useMemo(() => {
+    return donorResponses.filter(r =>
+      hospitalRequests.some(req => req.id === r.requestId) ||
+      (hospital?.id && r.hospitalId === hospital.id) ||
+      r.requesterId === currentUserId ||
+      (firebaseUid && r.requesterId === firebaseUid)
+    );
+  }, [donorResponses, hospitalRequests, hospital?.id, currentUserId, firebaseUid]);
 
   return (
-    <div className="space-y-6 max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
-      {/* 1. Hospital Credentials & Header Banner */}
-      <div className="bg-white rounded-xl border border-slate-200 p-6 shadow-xs flex flex-col md:flex-row md:items-center justify-between gap-4">
-        {/* CSS Selector 1 Target: div:nth-of-type(1) inside banner */}
-        <div className="flex items-start gap-4">
-          <div className="p-3.5 rounded-xl bg-gradient-to-br from-indigo-50 to-teal-50 border border-teal-100 text-teal-700 shadow-xs shrink-0">
-            <Building2 className="h-8 w-8 text-teal-700" />
-          </div>
-          <div className="space-y-1.5 min-w-0">
-            {/* Live Portal Status & Badge */}
-            <div className="flex items-center gap-2 flex-wrap">
-              <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider bg-teal-50 border border-teal-200 text-teal-800">
-                <span className="relative flex h-2 w-2">
-                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-teal-400 opacity-75"></span>
-                  <span className="relative inline-flex rounded-full h-2 w-2 bg-teal-500"></span>
-                </span>
-                Active Hospital Portal
-              </span>
-              <span className="flex items-center gap-1 text-[11px] font-bold text-teal-700 bg-teal-50 border border-teal-200 px-2 py-0.5 rounded-full">
-                <ShieldCheck className="h-3.5 w-3.5 text-teal-600" />
-                Verified Clinical Facility
-              </span>
-              {matchedCancerHospital && (
-                <span className="flex items-center gap-1 text-[11px] font-bold text-rose-700 bg-rose-50 border border-rose-200 px-2 py-0.5 rounded-full">
-                  <Sparkles className="h-3.5 w-3.5 text-rose-500" />
-                  Global Oncology Center
-                </span>
-              )}
-            </div>
-
-            {/* Automatically Displayed Hospital Portal Name */}
-            <h1 className="text-xl sm:text-2xl font-black text-slate-900 tracking-tight flex items-center gap-2 flex-wrap">
-              <span className="text-slate-900">{activePortalName}</span>
-            </h1>
-
-            {/* Facility Credential & Location */}
-            <p className="text-xs text-slate-600 font-medium flex items-center gap-2 flex-wrap">
-              <span className="text-slate-800 font-semibold">{displayLocation}</span>
-              <span className="text-slate-300">·</span>
-              <span>Regulatory Credential: <strong className="text-slate-700">{displayRegulatory}</strong></span>
-              {matchedCancerHospital?.globalRanking && (
-                <>
-                  <span className="text-slate-300">·</span>
-                  <span className="text-amber-700 font-semibold">{matchedCancerHospital.globalRanking}</span>
-                </>
-              )}
-            </p>
-
-            {/* Duty Coordinators & Emergency Transplant Desk */}
-            <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-slate-600 pt-0.5">
-              <span>Coordinators on Duty: <strong className="text-slate-800">{displayCoordinators}</strong></span>
-              {transplantDesk && (
-                <>
-                  <span className="text-slate-300">·</span>
-                  <span>24/7 Oncology & Transplant Hotline: <strong className="text-rose-600 font-mono font-bold">{transplantDesk}</strong></span>
-                </>
-              )}
-            </div>
-
-            {/* Live Search Indicator */}
-            {searchQuery.trim() && (
-              <div className="text-[11px] text-teal-900 bg-teal-50/90 border border-teal-200/90 px-2.5 py-1 rounded-md inline-flex items-center gap-1.5 mt-1 font-medium">
-                <Sparkles className="h-3.5 w-3.5 text-teal-600 shrink-0" />
-                <span>
-                  Live Hospital Search: automatically displaying portal for{' '}
-                  <strong>{matchedCancerHospital ? matchedCancerHospital.name : searchQuery}</strong>
-                </span>
-              </div>
-            )}
-          </div>
+    <div className="mx-auto max-w-7xl space-y-6 px-4 py-6 sm:px-6 lg:px-8">
+      {/* Top Banner */}
+      <section className="flex flex-col justify-between gap-5 rounded-2xl bg-slate-900 p-6 text-white sm:flex-row sm:items-center">
+        <div>
+          <p className="text-xs font-bold uppercase tracking-widest text-teal-300">Hospital portal</p>
+          <h1 className="mt-2 text-2xl font-black">{hospital?.name || currentUser.hospitalAffiliation || 'Hospital profile'}</h1>
+          <p className="mt-2 text-sm text-slate-300">
+            <MapPin className="mr-1 inline h-4 w-4" />{hospital ? `${hospital.city}, ${hospital.state}` : 'Location pending'} · <ShieldCheck className="mx-1 inline h-4 w-4 text-teal-300" />{hospital?.isVerified ? 'Verified hospital' : 'Verification pending'}
+          </p>
         </div>
+        <button
+          onClick={() => setIsCreateRequestModalOpen(true)}
+          className="rounded-lg bg-teal-500 px-4 py-2.5 text-sm font-bold text-slate-950 hover:bg-teal-400 transition cursor-pointer"
+        >
+          Create Blood Request
+        </button>
+      </section>
 
-        {/* Action Buttons */}
-        <div className="flex items-center gap-2 shrink-0">
-          <button
-            onClick={() => openAiModule('dispatch')}
-            className="px-4 py-2.5 bg-gradient-to-r from-teal-900 to-indigo-950 hover:from-teal-800 hover:to-indigo-900 text-teal-300 font-bold text-xs rounded-lg transition border border-teal-800/60 inline-flex items-center gap-1.5 shadow-xs shrink-0 cursor-pointer"
-          >
-            <Sparkles className="h-4 w-4 text-teal-400" />
-            <span>AI STAT Dispatch</span>
-          </button>
+      {/* Metrics Row */}
+      <section className="grid gap-4 sm:grid-cols-4">
+        <Stat label="Active blood requests" value={active.length} icon={<Droplet className="text-teal-600" />} />
+        <Stat label="Emergency requests" value={emergencies.length} icon={<AlertTriangle className="text-rose-600" />} />
+        <Stat label="Donor responses logged" value={hospitalResponses.length} icon={<HeartHandshake className="text-teal-600" />} />
+        <Stat label="Fulfilled requests" value={fulfilled.length} icon={<CheckCircle2 className="text-teal-600" />} />
+      </section>
 
-          <button
-            onClick={() => setIsCreateRequestModalOpen(true)}
-            className="px-4 py-2.5 bg-rose-600 hover:bg-rose-700 text-white font-bold text-xs rounded-lg transition-colors inline-flex items-center gap-1.5 shadow-xs shrink-0 cursor-pointer"
-          >
-            <PlusCircle className="h-4 w-4" />
-            <span>New Requisition</span>
-          </button>
-        </div>
-      </div>
-
-      {/* 2. Interactive Cancer Hospital Search & Live Portal Switcher */}
-      <div ref={searchContainerRef} className="bg-white rounded-xl border border-slate-200 p-4 sm:p-5 shadow-xs space-y-3">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+      {/* Hospital Blood Requests with Active/Fulfilled Toggle */}
+      <section className="rounded-xl border border-slate-200 bg-white">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between border-b p-5 gap-3">
           <div>
-            <div className="flex items-center gap-2">
-              <Search className="h-4 w-4 text-teal-600" />
-              <h2 className="text-sm font-bold text-slate-900">
-                Type or Search Any Cancer Hospital
-              </h2>
-            </div>
-            <p className="text-xs text-slate-500 mt-0.5">
-              Type any cancer hospital name below. The official hospital portal name automatically displays above in real-time.
+            <h2 className="font-bold text-slate-900">Hospital Blood Requests</h2>
+            <p className="text-sm text-slate-500">
+              {requestView === 'active'
+                ? 'Active requisitions currently undergoing matching or donor response.'
+                : 'Fulfilled requisitions completed through coordinated donation.'}
             </p>
           </div>
-          {searchQuery && (
+          <div className="flex items-center gap-1.5 bg-slate-100 p-1 rounded-lg self-start sm:self-auto">
             <button
-              onClick={handleClearSearch}
-              className="text-xs text-teal-700 hover:text-teal-900 font-semibold underline cursor-pointer shrink-0 self-start sm:self-auto"
+              onClick={() => setRequestView('active')}
+              className={`px-3 py-1 text-xs font-semibold rounded-md transition cursor-pointer ${
+                requestView === 'active'
+                  ? 'bg-white text-slate-900 shadow-xs'
+                  : 'text-slate-600 hover:text-slate-900'
+              }`}
             >
-              Reset to Base Facility
+              Active ({active.length})
             </button>
-          )}
-        </div>
-
-        {/* Search Input with Auto-complete */}
-        <div className="relative">
-          <div className="relative">
-            <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-400" />
-            <input
-              type="text"
-              value={searchQuery}
-              onChange={(e) => {
-                const val = e.target.value;
-                setSearchQuery(val);
-                setCancerHospitalSearchQuery(val);
-              }}
-              onFocus={() => setIsSearchFocused(true)}
-              placeholder="Type or search cancer hospital (e.g. MD Anderson, Memorial Sloan Kettering, Princess Margaret, Gustave Roussy, Charité, Tata Memorial, St. Jude, Dana-Farber...)"
-              className="w-full pl-10 pr-10 py-2.5 bg-slate-50 hover:bg-slate-100/70 focus:bg-white border border-slate-200 focus:border-teal-500 rounded-lg text-xs text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-teal-500/20 transition-all font-medium"
-            />
-            {searchQuery && (
-              <button
-                onClick={handleClearSearch}
-                className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 p-0.5 rounded cursor-pointer"
-                title="Clear hospital search"
-              >
-                <X className="h-4 w-4" />
-              </button>
-            )}
+            <button
+              onClick={() => setRequestView('fulfilled')}
+              className={`px-3 py-1 text-xs font-semibold rounded-md transition cursor-pointer ${
+                requestView === 'fulfilled'
+                  ? 'bg-white text-slate-900 shadow-xs'
+                  : 'text-slate-600 hover:text-slate-900'
+              }`}
+            >
+              Fulfilled ({fulfilled.length})
+            </button>
           </div>
-
-          {/* Autocomplete Suggestions Dropdown */}
-          {isSearchFocused && autocompleteSuggestions.length > 0 && (
-            <div className="absolute z-20 left-0 right-0 mt-1.5 bg-white border border-slate-200 rounded-xl shadow-xl max-h-72 overflow-y-auto divide-y divide-slate-100">
-              <div className="p-2 text-[10px] font-bold uppercase tracking-wider text-slate-400 bg-slate-50 sticky top-0 flex items-center justify-between">
-                <span>Matching Cancer Hospitals & Clinical Portals ({autocompleteSuggestions.length})</span>
-                <span className="text-teal-600 lowercase font-normal">click to load portal</span>
-              </div>
-              {autocompleteSuggestions.map((hosp) => (
-                <button
-                  key={hosp.id}
-                  onClick={() => handleSelectHospital(hosp)}
-                  className="w-full text-left p-3 hover:bg-teal-50/70 transition-colors flex items-center justify-between gap-3 cursor-pointer group"
-                >
-                  <div className="min-w-0">
-                    <div className="text-xs font-bold text-slate-900 group-hover:text-teal-700 truncate">
-                      {hosp.portalName || `${hosp.shortName} Hospital Portal`}
-                    </div>
-                    <div className="text-[11px] text-slate-500 truncate">
-                      {hosp.name} · {hosp.city}, {hosp.country}
-                    </div>
-                  </div>
-                  <span className="text-[10px] font-semibold text-teal-700 bg-teal-50 border border-teal-200 px-2 py-0.5 rounded shrink-0 group-hover:bg-teal-600 group-hover:text-white transition-colors">
-                    Display Portal →
-                  </span>
-                </button>
-              ))}
-            </div>
-          )}
         </div>
-
-        {/* Quick Select Cancer Hospital Chips */}
-        <div className="space-y-1.5 pt-1">
-          <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block">
-            Popular Cancer Hospital Portals (click to test & load):
-          </span>
-          <div className="flex items-center gap-1.5 flex-wrap">
-            {QUICK_CANCER_HOSPITALS.map((h) => {
-              const isSelected =
-                matchedCancerHospital?.id === h.id ||
-                searchQuery.toLowerCase().includes(h.shortName.toLowerCase());
+        {(requestView === 'active' ? active : fulfilled).length ? (
+          <div className="divide-y">
+            {(requestView === 'active' ? active : fulfilled).map(request => {
+              const reqResponses = donorResponses.filter(r => r.requestId === request.id);
               return (
-                <button
-                  key={h.id}
-                  onClick={() => handleSelectHospital(h)}
-                  className={`text-[11px] px-2.5 py-1 rounded-lg font-semibold transition-all border cursor-pointer ${
-                    isSelected
-                      ? 'bg-teal-700 text-white border-teal-700 shadow-xs'
-                      : 'bg-slate-50 hover:bg-slate-100 text-slate-700 border-slate-200'
-                  }`}
-                >
-                  {h.shortName}
-                </button>
+                <RequestRow
+                  key={request.id}
+                  request={request}
+                  responseCount={reqResponses.length}
+                  onOpen={() => setSelectedRequest(request)}
+                  onStatus={status => updateRequestStatus(request.id, status)}
+                />
               );
             })}
           </div>
-        </div>
-      </div>
-
-      {/* Lab Order Notice Toast */}
-      {labOrderSuccessNotice && (
-        <div className="p-3.5 bg-emerald-50 border border-emerald-200 rounded-xl text-xs text-emerald-900 flex items-center justify-between gap-3 shadow-xs">
-          <div className="flex items-center gap-2">
-            <CheckCircle2 className="h-4 w-4 text-emerald-600 shrink-0" />
-            <span>{labOrderSuccessNotice}</span>
+        ) : (
+          <div className="p-10 text-center text-sm text-slate-500">
+            {requestView === 'active'
+              ? 'No active blood requests. Click "Create Blood Request" above to initiate a requisition.'
+              : 'No fulfilled blood requests yet. Fulfilled requests will appear here after donation completion.'}
           </div>
-          <button
-            onClick={() => setLabOrderSuccessNotice(null)}
-            className="text-emerald-700 hover:text-emerald-900 p-0.5 rounded cursor-pointer"
-          >
-            <X className="h-3.5 w-3.5" />
-          </button>
-        </div>
-      )}
+        )}
+      </section>
 
-      {/* 3. Hospital Metrics */}
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-        <div className="p-4 bg-white rounded-xl border border-slate-200 shadow-xs">
-          <div className="text-xs text-slate-500 font-medium">
-            {matchedCancerHospital ? 'Dedicated Bone Marrow & Transplant Beds' : 'Active Facility Requisitions'}
-          </div>
-          <div className="text-2xl font-bold text-slate-900 font-mono mt-1">
-            {matchedCancerHospital ? `${matchedCancerHospital.boneMarrowBeds} Beds` : hospitalRequests.filter(r => r.status !== 'completed').length}
-          </div>
-          <div className="text-[11px] text-teal-600 mt-1">
-            {matchedCancerHospital ? 'Inpatient cellular therapy unit' : 'Under clinical management'}
-          </div>
-        </div>
-
-        <div className="p-4 bg-white rounded-xl border border-slate-200 shadow-xs">
-          <div className="text-xs text-slate-500 font-medium">
-            {matchedCancerHospital ? 'Blood Bank & Apheresis Capacity' : 'Emergency STAT Orders'}
-          </div>
-          <div className="text-2xl font-bold text-rose-600 font-mono mt-1">
-            {matchedCancerHospital ? matchedCancerHospital.bloodBankCapacity : hospitalRequests.filter(r => r.urgency === 'emergency' && r.status !== 'completed').length}
-          </div>
-          <div className="text-[11px] text-rose-500 mt-1">
-            {matchedCancerHospital ? 'Active oncology donor depot' : 'Critical window active'}
-          </div>
-        </div>
-
-        <div className="p-4 bg-white rounded-xl border border-slate-200 shadow-xs">
-          <div className="text-xs text-slate-500 font-medium">
-            {matchedCancerHospital ? 'Active Cancer Clinical Trials' : 'Compatible Donors in Radius'}
-          </div>
-          <div className="text-2xl font-bold text-indigo-700 font-mono mt-1">
-            {matchedCancerHospital ? `${matchedCancerHospital.clinicalTrialsCount} Trials` : donors.filter(d => d.distanceKm <= 15).length}
-          </div>
-          <div className="text-[11px] text-slate-400 mt-1">
-            {matchedCancerHospital ? 'BMT, CAR-T & Targeted Therapies' : '<15 km transit time'}
-          </div>
-        </div>
-      </div>
-
-      {/* 4. Sub Tabs */}
-      <div className="flex items-center gap-2 border-b border-slate-200 text-xs font-bold">
-        <button
-          onClick={() => setActiveSubTab('requisitions')}
-          className={`pb-2 px-1 border-b-2 transition-colors cursor-pointer ${
-            activeSubTab === 'requisitions'
-              ? 'border-teal-600 text-teal-800'
-              : 'border-transparent text-slate-500 hover:text-slate-800'
-          }`}
-        >
-          Hospital Requisitions ({hospitalRequests.length})
-        </button>
-        <button
-          onClick={() => setActiveSubTab('crossmatch')}
-          className={`pb-2 px-1 border-b-2 transition-colors cursor-pointer ${
-            activeSubTab === 'crossmatch'
-              ? 'border-teal-600 text-teal-800'
-              : 'border-transparent text-slate-500 hover:text-slate-800'
-          }`}
-        >
-          Clinical Donor Cross-Match Queue
-        </button>
-        <button
-          onClick={() => setActiveSubTab('facility')}
-          className={`pb-2 px-1 border-b-2 transition-colors cursor-pointer ${
-            activeSubTab === 'facility'
-              ? 'border-teal-600 text-teal-800'
-              : 'border-transparent text-slate-500 hover:text-slate-800'
-          }`}
-        >
-          Facility Ethics & Accreditations
-        </button>
-      </div>
-
-      {/* Content for Tabs */}
-      {activeSubTab === 'requisitions' && (
-        <div className="space-y-3">
-          {hospitalRequests.map(req => (
-            <div
-              key={req.id}
-              className="bg-white rounded-xl border border-slate-200 p-5 shadow-xs flex flex-col md:flex-row md:items-center justify-between gap-4"
-            >
-              <div className="space-y-1.5 flex-1">
-                <div className="flex items-center gap-2 text-xs">
-                  <span className={`text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded border ${
-                    req.urgency === 'emergency'
-                      ? 'bg-rose-50 text-rose-700 border-rose-200'
-                      : req.urgency === 'urgent'
-                      ? 'bg-amber-50 text-amber-700 border-amber-200'
-                      : 'bg-slate-50 text-slate-700 border-slate-200'
-                  }`}>
-                    {req.urgency}
-                  </span>
-                  <span className="font-bold text-slate-800 uppercase text-[10px]">
-                    {req.category.replace('_', ' ')}
-                  </span>
-                  <span>·</span>
-                  <span className="font-mono text-slate-500 text-[11px]">
-                    Patient: {req.patientAlias}
-                  </span>
-                  <span>·</span>
-                  <span className="font-mono text-rose-600 font-semibold text-[11px] flex items-center gap-1">
-                    <Clock className="h-3 w-3" />
-                    {req.deadlineHoursRemaining}h remaining
-                  </span>
-                </div>
-
-                <h3 className="text-base font-bold text-slate-900">
-                  {req.title}
-                </h3>
-
-                <p className="text-xs text-slate-600 line-clamp-1">
-                  {req.medicalNotes}
-                </p>
-
-                <div className="text-[11px] text-teal-700 font-medium">
-                  {req.matchedDonorIds.length} candidate donors ready for cross-match protocol
-                </div>
-              </div>
-
-              <div className="flex items-center gap-2 shrink-0">
-                <button
-                  onClick={() => setSelectedRequest(req)}
-                  className="px-4 py-2 bg-slate-900 hover:bg-slate-800 text-white rounded-lg text-xs font-semibold transition-colors cursor-pointer"
-                >
-                  Clinical Triage
-                </button>
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
-
-      {activeSubTab === 'crossmatch' && (
-        <div className="bg-white rounded-xl border border-slate-200 p-6 shadow-xs space-y-4">
-          <div>
-            <h3 className="text-base font-bold text-slate-900">
-              Immediate Donor Screening & Cross-Match Queue
-            </h3>
-            <p className="text-xs text-slate-500">
-              Approved clinical matches awaiting pre-donation serology and rapid laboratory confirmation
+      {/* 2-Column: Potential Matches vs Real Donor Responses */}
+      <section className="grid gap-6 xl:grid-cols-2">
+        {/* Left: Potential Matches */}
+        <div className="rounded-xl border border-slate-200 bg-white">
+          <div className="border-b p-5">
+            <h2 className="flex items-center gap-2 font-bold text-slate-900">
+              <Users className="h-5 w-5 text-teal-600" />
+              Potential donor matches
+            </h2>
+            <p className="mt-1 text-sm text-slate-500">
+              Ranked by blood-group compatibility, availability, and urgency.
             </p>
           </div>
-
-          <div className="divide-y divide-slate-100">
-            {donors.slice(0, 3).map(donor => (
-              <div key={donor.id} className="py-3 flex items-center justify-between gap-4">
-                <div>
-                  <div className="text-xs font-bold text-slate-900 flex items-center gap-2">
-                    <span>{donor.donorName}</span>
-                    <span className="text-[10px] text-emerald-700 font-mono font-normal">
-                      {donor.distanceKm} km ({donor.city})
-                    </span>
+          <div className="divide-y">
+            {matches.length ? (
+              matches.slice(0, 6).map((item, index) => (
+                <div key={`${item.request.id}-${item.donor.id}`} className="p-4">
+                  <div className="flex justify-between gap-3">
+                    <div>
+                      <p className="font-semibold text-slate-900">Potential donor match {index + 1}</p>
+                      <p className="mt-1 text-sm text-slate-600">
+                        {item.donor.bloodDetails?.bloodGroup || 'Blood group pending'} · {item.donor.availabilityStatus.replace('_', ' ')} · {item.donor.city}
+                      </p>
+                      <p className="mt-1 text-xs text-slate-500">
+                        For request: {item.request.hospitalName} — {item.request.bloodRequirements?.targetBloodGroup || 'Blood group pending'}
+                      </p>
+                    </div>
+                    <span className="text-xs font-bold text-teal-700">Match priority {item.score}</span>
                   </div>
-                  <div className="text-[11px] text-slate-500 mt-0.5">
-                    Clearance: <strong className="text-slate-700">{donor.verificationBadge}</strong>
-                  </div>
+                  <p className="mt-2 text-xs text-amber-800">
+                    Potential donor match — final eligibility must be confirmed by the hospital.
+                  </p>
                 </div>
-
-                <div className="flex items-center gap-2">
-                  <span className="text-xs font-mono font-bold text-teal-700 bg-teal-50 px-2 py-1 rounded">
-                    Ready for Lab Order
-                  </span>
-                  <button
-                    onClick={() => {
-                      setLabOrderSuccessNotice(
-                        `Clinical screening order successfully issued for donor ${donor.donorName}. Blood Bank & Tissue Lab notified for ${activePortalName}.`
-                      );
-                    }}
-                    className="px-3 py-1.5 text-xs font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-md transition-colors cursor-pointer"
-                  >
-                    Issue Lab Order
-                  </button>
-                </div>
-              </div>
-            ))}
+              ))
+            ) : (
+              <p className="p-6 text-sm text-slate-500">No potential matches currently available.</p>
+            )}
           </div>
         </div>
-      )}
 
-      {activeSubTab === 'facility' && (
-        <div className="bg-white rounded-xl border border-slate-200 p-6 shadow-xs space-y-4 text-xs text-slate-600 leading-relaxed">
-          <h3 className="text-base font-bold text-slate-900">
-            Institutional Ethics & Regulatory Accreditation
-          </h3>
-          <p>
-            <strong>{activePortalName}</strong> is fully integrated with national organ procurement organizations, regional cellular registries, and regulatory clinical authorities.
-          </p>
-
-          {matchedCancerHospital ? (
-            <div className="space-y-3 pt-2">
-              <div className="p-3.5 rounded-lg border border-slate-200 bg-slate-50">
-                <div className="font-bold text-slate-900 text-xs mb-1">Oncology Specializations & Protocol Wings</div>
-                <div className="flex flex-wrap gap-1.5 mt-1.5">
-                  {matchedCancerHospital.oncologySpecialties.map((spec, i) => (
-                    <span key={i} className="px-2 py-0.5 rounded bg-white border border-slate-200 text-slate-700 text-[11px] font-medium">
-                      {spec}
-                    </span>
-                  ))}
-                </div>
-              </div>
-
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <div className="p-3.5 rounded-lg border border-slate-200 bg-slate-50">
-                  <div className="font-bold text-slate-900 text-xs mb-1">Pediatric Cranial Wig Partnership</div>
-                  <p className="text-[11px] text-slate-500">
-                    Affiliated Guild: <strong>{matchedCancerHospital.pediatricWigGuildAffiliation}</strong>
-                  </p>
-                </div>
-                <div className="p-3.5 rounded-lg border border-slate-200 bg-slate-50">
-                  <div className="font-bold text-slate-900 text-xs mb-1">Annual Oncology Patient Influx</div>
-                  <p className="text-[11px] text-slate-500">
-                    Treats over <strong>{matchedCancerHospital.annualPatients}</strong> annually under verified protocols.
-                  </p>
-                </div>
-              </div>
-            </div>
-          ) : (
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2">
-              <div className="p-3.5 rounded-lg border border-slate-200 bg-slate-50">
-                <div className="font-bold text-slate-900 text-xs mb-1">NOTA Compliance Protocol</div>
-                <p className="text-[11px] text-slate-500">
-                  Hospital Independent Donor Advocates ensure all living kidney and liver donations are completely voluntary and uncompensated.
+        {/* Right: REAL DONOR RESPONSES (Phase 5) */}
+        <div className="rounded-xl border border-slate-200 bg-white flex flex-col">
+          <div className="border-b p-5">
+            <div className="flex items-center justify-between">
+              <div>
+                <h2 className="flex items-center gap-2 font-bold text-slate-900">
+                  <HeartHandshake className="h-5 w-5 text-teal-600" />
+                  Donor responses ({hospitalResponses.length})
+                </h2>
+                <p className="mt-1 text-sm text-slate-500">
+                  Live responses from donors who clicked &quot;I&apos;m Available&quot; for this facility.
                 </p>
               </div>
-              <div className="p-3.5 rounded-lg border border-slate-200 bg-slate-50">
-                <div className="font-bold text-slate-900 text-xs mb-1">AABB Serology Standards</div>
-                <p className="text-[11px] text-slate-500">
-                  All whole blood and platelet collections undergo nucleic acid testing (NAT) and rapid infectious disease screening.
-                </p>
-              </div>
+              <span className="text-xs font-mono font-bold text-teal-700 bg-teal-50 px-2 py-0.5 rounded border border-teal-200">
+                Firestore
+              </span>
             </div>
-          )}
+          </div>
+
+          <div className="divide-y flex-1 max-h-[480px] overflow-y-auto">
+            {hospitalResponses.length === 0 ? (
+              <div className="p-8 text-center text-sm text-slate-500">
+                No donor responses yet. When compatible donors click &quot;I&apos;m Available&quot;, their responses appear here.
+              </div>
+            ) : (
+              hospitalResponses.map(resp => {
+                const matchingReq = hospitalRequests.find(r => r.id === resp.requestId);
+                return (
+                  <div key={resp.id} className="p-4 space-y-2.5">
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="flex items-center gap-2.5">
+                        <span className="h-8 w-8 rounded-lg bg-rose-50 text-rose-700 font-black text-xs flex items-center justify-center border border-rose-200">
+                          {resp.bloodGroup}
+                        </span>
+                        <div>
+                          <p className="font-semibold text-slate-900 text-sm">{resp.donorName}</p>
+                          <p className="text-xs text-slate-500">
+                            {resp.city || 'Location shared'} · Responded {new Date(resp.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                          </p>
+                        </div>
+                      </div>
+                      <span className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider ${
+                        resp.status === 'confirmed'
+                          ? 'bg-sky-100 text-sky-800 border border-sky-200'
+                          : resp.status === 'fulfilled'
+                          ? 'bg-emerald-100 text-emerald-800 border border-emerald-200'
+                          : 'bg-teal-50 text-teal-700 border border-teal-200'
+                      }`}>
+                        {resp.status}
+                      </span>
+                    </div>
+
+                    <div className="bg-slate-50 p-2 rounded text-xs text-slate-600 flex items-center justify-between">
+                      <span>Target Request: <strong>{matchingReq?.title || resp.requestId}</strong></span>
+                      <span className="text-slate-400 font-mono text-[11px]">{matchingReq?.unitsNeeded || 1} units</span>
+                    </div>
+
+                    <div className="flex items-center justify-end gap-2 pt-1">
+                      {resp.status === 'available' && (
+                        <button
+                          onClick={() => updateDonorResponseStatus(resp.id, 'confirmed')}
+                          className="px-2.5 py-1 text-xs font-semibold text-sky-700 bg-sky-50 hover:bg-sky-100 rounded-md transition cursor-pointer"
+                        >
+                          Confirm Match
+                        </button>
+                      )}
+                      {(!matchingReq || matchingReq.status !== 'completed') && (
+                        <button
+                          onClick={() => {
+                            updateRequestStatus(resp.requestId, 'completed', `Fulfillment coordinated with donor ${resp.donorName}.`);
+                            updateDonorResponseStatus(resp.id, 'fulfilled');
+                          }}
+                          className="px-2.5 py-1 text-xs font-semibold text-white bg-teal-600 hover:bg-teal-700 rounded-md transition cursor-pointer shadow-2xs"
+                        >
+                          Mark Request Fulfilled
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                );
+              })
+            )}
+          </div>
+          <div className="p-3 bg-slate-50 border-t border-slate-200 text-[11px] text-slate-500">
+            No direct donor phone or private email is displayed. Coordination is managed securely through the portal.
+          </div>
         </div>
-      )}
+      </section>
+
+      {/* Integration Status Notice */}
+      <section className="rounded-xl border border-slate-200 bg-white p-5">
+        <h2 className="font-bold text-slate-900">Integration status</h2>
+        <p className="mt-2 text-sm text-slate-600">
+          e-RaktKosh integration pending institutional authorization.
+        </p>
+      </section>
     </div>
   );
 };
+
+const Stat = ({ label, value, icon }: { label: string; value: number; icon: React.ReactNode }) => (
+  <div className="rounded-xl border border-slate-200 bg-white p-4">
+    <div className="flex items-center justify-between text-sm text-slate-500">
+      <span>{label}</span>
+      {icon}
+    </div>
+    <p className="mt-2 text-3xl font-black text-slate-900">{value}</p>
+  </div>
+);
+
+const RequestRow = ({
+  request,
+  responseCount,
+  onOpen,
+  onStatus
+}: {
+  request: DonationRequest;
+  responseCount: number;
+  onOpen: () => void;
+  onStatus: (status: RequestStatus) => void;
+}) => (
+  <div className="flex flex-col gap-3 p-5 lg:flex-row lg:items-center lg:justify-between">
+    <button onClick={onOpen} className="text-left cursor-pointer">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="rounded bg-rose-50 px-2 py-1 text-xs font-bold text-rose-700">
+          {request.bloodRequirements?.targetBloodGroup || 'Blood group pending'}
+        </span>
+        <span className="text-xs font-bold uppercase text-slate-500">{STATUS[request.status]}</span>
+        {request.urgency === 'emergency' && (
+          <span className="text-xs font-bold text-rose-600 animate-pulse">EMERGENCY</span>
+        )}
+        {responseCount > 0 && (
+          <span className="rounded bg-teal-50 px-2 py-0.5 text-xs font-bold text-teal-700 border border-teal-200 flex items-center gap-1">
+            <Check className="h-3 w-3" />
+            {responseCount} Donor Responded
+          </span>
+        )}
+      </div>
+      <p className="mt-2 font-semibold text-slate-900">
+        {request.unitsNeeded || 1} unit{request.unitsNeeded === 1 ? '' : 's'} · {request.hospitalName}
+      </p>
+      <p className="mt-1 flex items-center gap-1 text-xs text-slate-500">
+        <Clock className="h-3.5 w-3.5" />
+        {request.deadlineDate || 'Deadline pending'}
+      </p>
+    </button>
+    <div className="flex flex-wrap gap-2">
+      <button onClick={onOpen} className="rounded-lg border border-teal-200 bg-teal-50 px-3 py-2 text-xs font-bold text-teal-700 hover:bg-teal-100 transition cursor-pointer">
+        View details
+      </button>
+      {request.status !== 'completed' && (
+        <button onClick={() => onStatus('completed')} className="rounded-lg bg-teal-600 px-3 py-2 text-xs font-bold text-white hover:bg-teal-700 transition cursor-pointer">
+          Mark fulfilled
+        </button>
+      )}
+      {request.status !== 'cancelled' && request.status !== 'completed' && (
+        <button onClick={() => onStatus('cancelled')} className="rounded-lg border border-slate-300 px-3 py-2 text-xs font-bold text-slate-600 hover:bg-slate-100 transition cursor-pointer">
+          Cancel
+        </button>
+      )}
+    </div>
+  </div>
+);

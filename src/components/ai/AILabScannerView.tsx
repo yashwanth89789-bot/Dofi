@@ -43,27 +43,28 @@ Method: Nucleic Acid Amplification Testing (NAT) & Chemiluminescent Immunoassay
 - CMV IgG Antibody: Positive (Convalescent Titers) | CMV IgM: Negative`,
     },
     {
-      title: 'High-Resolution HLA Allele Typing Report',
-      category: 'Bone Marrow / Organ HLA Panel',
-      text: `HISTOCOMPATIBILITY & IMMUNOGENETICS REPORT
-Loci Typing via Next-Generation DNA Sequencing:
-- HLA-A* 02:01, 24:02
-- HLA-B* 07:02, 35:01
-- HLA-C* 07:02, 04:01
-- HLA-DRB1* 15:01, 03:01
-- HLA-DQB1* 06:02, 02:01
-- Calculated Panel Reactive Antibodies (cPRA): 0%
-- T-Cell / B-Cell Complement-Dependent Cytotoxicity Crossmatch: NEGATIVE`,
+      title: 'ABO/Rh Blood Typing & Irregular Antibody Screen',
+      category: 'Blood Group & Antibody Screen',
+      text: `TRANSFUSION SERVICE - IMMUNOHEMATOLOGY REPORT
+Specimen: EDTA Anticoagulated Whole Blood | Testing Method: Column Agglutination (Gel Card)
+- ABO Grouping: Forward: Anti-A (+4), Anti-B (0) | Reverse: A1 Cells (0), B Cells (+4) → Confirmed Group A
+- Rh (D) Typing: Anti-D (+4) → Rh Positive
+- Weak D / Du Variant Testing: Not Required (Strong Immediate Reaction)
+- Direct Antiglobulin Test (DAT / Coombs): Negative
+- Unexpected Antibody Screen (3-Cell Panel): Negative (No clinically significant red cell alloantibodies detected)
+- Autocontrol: Negative`,
     },
     {
-      title: 'Hair Keratin & Scalp Health Assessment',
-      category: 'Hair Donation Quality Assessment',
-      text: `CRANIAL PROSTHESIS GUILD - KERATIN FIBER REPORT
-- Length Unstretched: 13.5 inches
-- Cuticle Status: Intact, non-lifted, virgin grade
-- Chemical Residues: Negative for ammonia, hydrogen peroxide bleaches
-- Tensile Elasticity: 94% retention under 20cN elongation test
-- Porosity: Low-medium, suitable for hospital autoclaving & child wig foundation`,
+      title: 'Coagulation Profile & Platelet Function Test',
+      category: 'Coagulation & Hemostasis Panel',
+      text: `HEMOSTASIS & THROMBOSIS LABORATORY - PRE-APHERESIS EVALUATION
+Specimen: 3.2% Sodium Citrate Plasma & Whole Blood
+- Prothrombin Time (PT): 11.8 sec (Ref: 11.0 - 13.5 sec)
+- International Normalized Ratio (INR): 1.02 (Ref: 0.8 - 1.2)
+- Activated Partial Thromboplastin Time (aPTT): 28.4 sec (Ref: 25.0 - 36.0 sec)
+- Fibrinogen Activity (Clauss): 310 mg/dL (Ref: 200 - 400 mg/dL)
+- Platelet Count: 260,000 /uL (Ref: 150,000 - 450,000 /uL)
+- Multiplate Platelet Aggregometry: Normal Aggregation Response to ADP and Arachidonic Acid`,
     },
   ];
 

@@ -23,7 +23,7 @@
         },
         "role": {
           "type": "string",
-          "enum": ["donor", "recipient", "hospital_staff", "admin"],
+          "enum": ["user", "donor", "hospital", "admin"],
           "description": "App role and permission level"
         },
         "isVerified": {
@@ -84,7 +84,7 @@
         },
         "categories": {
           "type": "array",
-          "description": "Donation categories pledged (blood, organ, bone_tissue, hair)"
+          "description": "Donation categories pledged (blood)"
         },
         "bloodGroup": {
           "type": "string",

@@ -14,15 +14,13 @@ import {
   BloodGroup,
   ScheduledSlot,
   BloodDrive,
-  PatientStory
+  PatientStory,
+  DonorResponse
 } from '../types';
 import {
   CURRENT_USER_MOCK,
   DEMO_USERS,
   ORGANIZATIONS_MOCK,
-  DONOR_PROFILES_MOCK,
-  DONATION_REQUESTS_MOCK,
-  NOTIFICATIONS_MOCK,
   VERIFICATION_QUEUE_MOCK,
   MODERATION_REPORTS_MOCK,
   BLOOD_COMPATIBILITY_MAP,
@@ -35,12 +33,13 @@ import {
   db,
   signInWithGoogle,
   signOutFirebaseUser,
+  syncUserToFirestore,
   saveDonationRegistrationToFirestore,
   RegisteredAppUser,
   FirebaseDonationRegistration
 } from '../lib/firebase';
 import { onAuthStateChanged, User as FirebaseUser } from 'firebase/auth';
-import { collection, onSnapshot, query, orderBy, setDoc, doc } from 'firebase/firestore';
+import { collection, onSnapshot, query, orderBy, setDoc, doc, updateDoc, where } from 'firebase/firestore';
 
 interface AppContextType {
   currentUser: User;
@@ -56,8 +55,8 @@ interface AppContextType {
   impactStats: ImpactStats;
   
   // UI state
-  activeTab: 'dashboard' | 'find-donors' | 'requests' | 'hospital' | 'admin' | 'ethics' | 'ai-suite' | 'registrations';
-  setActiveTab: (tab: 'dashboard' | 'find-donors' | 'requests' | 'hospital' | 'admin' | 'ethics' | 'ai-suite' | 'registrations') => void;
+  activeTab: 'dashboard' | 'find-donors' | 'requests' | 'hospital' | 'admin' | 'ethics' | 'ai-suite' | 'registrations' | 'ai-clinical-tools';
+  setActiveTab: (tab: 'dashboard' | 'find-donors' | 'requests' | 'hospital' | 'admin' | 'ethics' | 'ai-suite' | 'registrations' | 'ai-clinical-tools') => void;
   activeFilterCategory: 'all' | DonationCategory;
   setActiveFilterCategory: (cat: 'all' | DonationCategory) => void;
   selectedRequest: DonationRequest | null;
@@ -99,7 +98,18 @@ interface AppContextType {
   registeredAppUsersList: RegisteredAppUser[];
   firebaseDonationsList: FirebaseDonationRegistration[];
   isFirebaseLoading: boolean;
-  loginWithGoogle: () => Promise<void>;
+  isAuthReady: boolean;
+  firestoreRequests: any[];
+  firestoreRequestsCount: number;
+  // Live Firestore-backed dashboard counts (exclude demo data)
+  liveActiveRequests: number;
+  liveCriticalEmergencies: number;
+  liveBloodRequests: number;
+  liveOrganRequests: number;
+  liveAvailableDonors: number;
+  liveRegisteredDonors: number;
+  liveRegisteredUsers: number;
+  loginWithGoogle: (intendedRole?: UserRole) => Promise<void>;
   logoutFirebase: () => Promise<void>;
   registerDonationToFirebase: (data: Partial<FirebaseDonationRegistration>) => Promise<FirebaseDonationRegistration>;
 
@@ -120,6 +130,11 @@ interface AppContextType {
   registerForBloodDrive: (driveId: string) => boolean;
   likePatientStory: (storyId: string) => void;
   submitPatientStory: (story: Omit<PatientStory, 'id' | 'heartsCount' | 'isVerified'>) => void;
+
+  // Donor response workflow (Phase 5)
+  donorResponses: DonorResponse[];
+  respondToRequest: (requestId: string, notes?: string) => Promise<{ success: boolean; message: string }>;
+  updateDonorResponseStatus: (responseId: string, status: DonorResponse['status']) => Promise<void>;
 }
 
 const AppContext = createContext<AppContextType | undefined>(undefined);
@@ -130,29 +145,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     return saved ? JSON.parse(saved) : CURRENT_USER_MOCK;
   });
 
-  const [requests, setRequests] = useState<DonationRequest[]>(() => {
-    const saved = localStorage.getItem('dc4c_requests');
-    return saved ? JSON.parse(saved) : DONATION_REQUESTS_MOCK;
-  });
-
-  const [donors, setDonors] = useState<DonorProfile[]>(() => {
-    const saved = localStorage.getItem('dc4c_donors');
-    if (!saved) return DONOR_PROFILES_MOCK;
-    try {
-      const parsed: DonorProfile[] = JSON.parse(saved);
-      return parsed.map(p => {
-        const defaultDonor = DONOR_PROFILES_MOCK.find(d => d.id === p.id);
-        return {
-          ...p,
-          scheduledSlots: (p.scheduledSlots && p.scheduledSlots.length > 0)
-            ? p.scheduledSlots
-            : (defaultDonor?.scheduledSlots || [])
-        };
-      });
-    } catch {
-      return DONOR_PROFILES_MOCK;
-    }
-  });
+  const [requests, setRequests] = useState<DonationRequest[]>([]);
+  const [donors, setDonors] = useState<DonorProfile[]>([]);
 
   const [organizations] = useState<Organization[]>(ORGANIZATIONS_MOCK);
 
@@ -168,7 +162,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const [notifications, setNotifications] = useState<NotificationItem[]>(() => {
     const saved = localStorage.getItem('dc4c_notifications');
-    return saved ? JSON.parse(saved) : NOTIFICATIONS_MOCK;
+    if (!saved) return [];
+    try {
+      const list: NotificationItem[] = JSON.parse(saved);
+      return list.filter(n => !n.id.startsWith('notif_login_'));
+    } catch {
+      return [];
+    }
   });
 
   const [verificationQueue, setVerificationQueue] = useState<VerificationItem[]>(() => {
@@ -182,7 +182,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   });
 
   // UI state
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'find-donors' | 'requests' | 'hospital' | 'admin' | 'ethics' | 'ai-suite' | 'registrations'>('dashboard');
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'find-donors' | 'requests' | 'hospital' | 'admin' | 'ethics' | 'ai-suite' | 'registrations' | 'ai-clinical-tools'>('dashboard');
   const [activeFilterCategory, setActiveFilterCategory] = useState<'all' | DonationCategory>('all');
   const [selectedRequest, setSelectedRequest] = useState<DonationRequest | null>(null);
   const [selectedDonor, setSelectedDonor] = useState<DonorProfile | null>(null);
@@ -198,215 +198,296 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [registeredAppUsersList, setRegisteredAppUsersList] = useState<RegisteredAppUser[]>([]);
   const [firebaseDonationsList, setFirebaseDonationsList] = useState<FirebaseDonationRegistration[]>([]);
   const [isFirebaseLoading, setIsFirebaseLoading] = useState<boolean>(false);
+  const [isAuthReady, setIsAuthReady] = useState<boolean>(false);
+  const [firestoreRequests, setFirestoreRequests] = useState<any[]>([]);
+  const [firestoreRequestsCount, setFirestoreRequestsCount] = useState(0);
 
-  // Firebase Auth State Listener
+  // Firebase Auth State Listener — source of truth for auth state
+  // This runs automatically whenever auth state changes (sign-in, sign-out, page reload)
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (fbUser) => {
+      console.log('[AppContext] onAuthStateChanged fired. User:', fbUser?.uid ?? 'null');
       setFirebaseUser(fbUser);
+
       if (fbUser) {
+        // Update the demo currentUser fields to reflect the real Firebase user
+        // This does NOT override the demo role switcher — it just syncs displayName/email/photo
         setCurrentUser(prev => ({
           ...prev,
+          id: fbUser.uid,
           name: fbUser.displayName || prev.name,
           email: fbUser.email || prev.email,
           avatarUrl: fbUser.photoURL || prev.avatarUrl
         }));
+
+        // Sync/create Firestore user record (decoupled from popup — errors won't break auth display)
+        try {
+          const appUser = await syncUserToFirestore(fbUser);
+          setRegisteredAppUser(appUser);
+          console.log('[AppContext] registeredAppUser set:', appUser.id, appUser.role);
+          
+          const isAdmin = fbUser.email === 'mohammedayaan9683@gmail.com' || appUser.role === 'admin';
+          if (isAdmin) {
+            setCurrentUser(prev => ({
+              ...prev,
+              role: 'admin',
+              isVerified: true
+            }));
+            sessionStorage.setItem('dofi_role_chosen', '1');
+            localStorage.setItem('dofi_user_role', 'admin');
+            setActiveTab('admin');
+          } else {
+            const savedRole = localStorage.getItem('dofi_user_role') as UserRole | null;
+            const effectiveRole: UserRole | null = (savedRole as string) === 'recipient' ? 'user' : savedRole;
+            if (effectiveRole && (effectiveRole === 'donor' || effectiveRole === 'hospital' || effectiveRole === 'user')) {
+              setCurrentUser(prev => ({
+                ...prev,
+                role: effectiveRole
+              }));
+              sessionStorage.setItem('dofi_role_chosen', '1');
+              if (effectiveRole === 'hospital') {
+                setActiveTab('hospital');
+              }
+            } else if (appUser.role === 'donor') {
+              setCurrentUser(prev => ({
+                ...prev,
+                role: 'donor'
+              }));
+              sessionStorage.setItem('dofi_role_chosen', '1');
+              localStorage.setItem('dofi_user_role', 'donor');
+            } else if (appUser.role === 'hospital_staff') {
+              setCurrentUser(prev => ({
+                ...prev,
+                role: 'hospital'
+              }));
+              sessionStorage.setItem('dofi_role_chosen', '1');
+              localStorage.setItem('dofi_user_role', 'hospital');
+              setActiveTab('hospital');
+            }
+          }
+        } catch (err) {
+          console.warn('[AppContext] Firestore user sync failed — auth state still updated:', err);
+        } finally {
+          setIsAuthReady(true);
+        }
+      } else {
+        // Signed out
+        setRegisteredAppUser(null);
+        sessionStorage.removeItem('dofi_role_chosen');
+        localStorage.removeItem('dofi_user_role');
+        setIsAuthReady(true);
+        console.log('[AppContext] User signed out — registeredAppUser cleared.');
       }
     });
     return () => unsubscribe();
   }, []);
 
-  // Real-time Firestore users listener
+  // Real-time Firestore users listener — only real signed-in users
   useEffect(() => {
     const q = query(collection(db, 'users'), orderBy('createdAt', 'desc'));
     const unsubscribe = onSnapshot(q, (snapshot) => {
-      if (!snapshot.empty) {
-        const users = snapshot.docs.map(d => d.data() as RegisteredAppUser);
-        setRegisteredAppUsersList(users);
-      } else {
-        const initialUsers: RegisteredAppUser[] = [
-          {
-            id: 'usr_marcus_vance',
-            displayName: 'Marcus Vance',
-            email: 'marcus.vance@donorconnect4care.org',
-            photoURL: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&q=80&w=200',
-            role: 'donor',
-            isVerified: true,
-            donationsRegisteredCount: 4,
-            createdAt: '2024-01-15T08:30:00.000Z',
-            lastLoginAt: new Date().toISOString(),
-            provider: 'google'
-          },
-          {
-            id: 'usr_ananya_sharma',
-            displayName: 'Ananya Sharma, RN',
-            email: 'ananya.sharma@donorconnect4care.org',
-            photoURL: 'https://images.unsplash.com/photo-1573496359142-b8d87734a5a2?auto=format&fit=crop&q=80&w=200',
-            role: 'donor',
-            isVerified: true,
-            donationsRegisteredCount: 6,
-            createdAt: '2024-02-10T11:20:00.000Z',
-            lastLoginAt: new Date().toISOString(),
-            provider: 'google'
-          },
-          {
-            id: 'usr_elena_rostova',
-            displayName: 'Elena Rostova',
-            email: 'elena.rostova@care.net',
-            photoURL: 'https://images.unsplash.com/photo-1580489944761-15a19d654956?auto=format&fit=crop&q=80&w=200',
-            role: 'recipient',
-            isVerified: true,
-            donationsRegisteredCount: 1,
-            createdAt: '2024-03-01T14:45:00.000Z',
-            lastLoginAt: new Date().toISOString(),
-            provider: 'google'
-          },
-          {
-            id: 'usr_dr_sarah_chen',
-            displayName: 'Dr. Sarah Chen, MD',
-            email: 'sarah.chen@metromedical.org',
-            photoURL: 'https://images.unsplash.com/photo-1559839734-2b71ea197ec2?auto=format&fit=crop&q=80&w=200',
-            role: 'hospital_staff',
-            isVerified: true,
-            donationsRegisteredCount: 12,
-            createdAt: '2023-11-01T09:00:00.000Z',
-            lastLoginAt: new Date().toISOString(),
-            provider: 'google'
-          },
-          {
-            id: 'usr_compliance_officer',
-            displayName: 'Platform Compliance Officer',
-            email: 'compliance@donorconnect4care.org',
-            photoURL: 'https://images.unsplash.com/photo-1472099645785-5658abf4ff4e?auto=format&fit=crop&q=80&w=200',
-            role: 'admin',
-            isVerified: true,
-            donationsRegisteredCount: 0,
-            createdAt: '2023-10-01T00:00:00.000Z',
-            lastLoginAt: new Date().toISOString(),
-            provider: 'google'
-          }
-        ];
-        initialUsers.forEach(u => {
-          setDoc(doc(db, 'users', u.id), u).catch(() => {});
-        });
-        setRegisteredAppUsersList(initialUsers);
-      }
+      const users = snapshot.docs.map(d => d.data() as RegisteredAppUser);
+      setRegisteredAppUsersList(users);
     }, (error) => {
       console.warn('[Firestore] users snapshot error:', error);
     });
     return () => unsubscribe();
   }, []);
 
-  // Real-time Firestore donation registrations listener
+  // Real-time Firestore donation registrations listener — only real user-submitted registrations
   useEffect(() => {
     const q = query(collection(db, 'donation_registrations'), orderBy('createdAt', 'desc'));
     const unsubscribe = onSnapshot(q, (snapshot) => {
-      if (!snapshot.empty) {
-        const donations = snapshot.docs.map(d => d.data() as FirebaseDonationRegistration);
-        setFirebaseDonationsList(donations);
-      } else {
-        const initialDonations: FirebaseDonationRegistration[] = [
-          {
-            id: 'reg_don_001',
-            registeredByUserId: 'usr_marcus_vance',
-            registeredByUserEmail: 'marcus.vance@donorconnect4care.org',
-            registeredByUserName: 'Marcus Vance',
-            donorName: 'Marcus Vance',
-            phone: '+1 (312) 555-0199',
-            email: 'marcus.vance@donorconnect4care.org',
-            city: 'Chicago',
-            state: 'IL',
-            categories: ['blood', 'bone_tissue'],
-            bloodGroup: 'O-',
-            availabilityStatus: 'available_now',
-            verificationBadge: 'Verified Platform Registrant',
-            status: 'active',
-            medicalNotes: 'Whole Blood & Platelets apheresis pledged. HLA swab kit completed.',
-            createdAt: '2024-02-14T09:15:00.000Z'
-          },
-          {
-            id: 'reg_don_002',
-            registeredByUserId: 'usr_ananya_sharma',
-            registeredByUserEmail: 'ananya.sharma@donorconnect4care.org',
-            registeredByUserName: 'Ananya Sharma, RN',
-            donorName: 'Ananya Sharma, RN',
-            phone: '+1 (312) 555-0288',
-            email: 'ananya.sharma@donorconnect4care.org',
-            city: 'Evanston',
-            state: 'IL',
-            categories: ['blood', 'organ'],
-            bloodGroup: 'A+',
-            availabilityStatus: 'available_now',
-            verificationBadge: 'Clinical Professional Verified',
-            status: 'active',
-            medicalNotes: 'Living altruistic kidney and cornea pledged. Consenting next-of-kin informed.',
-            createdAt: '2024-03-05T13:40:00.000Z'
-          },
-          {
-            id: 'reg_don_003',
-            registeredByUserId: 'usr_dr_sarah_chen',
-            registeredByUserEmail: 'sarah.chen@metromedical.org',
-            registeredByUserName: 'Dr. Sarah Chen, MD',
-            donorName: 'Chloe Bennett',
-            phone: '+1 (312) 555-0377',
-            email: 'chloe.bennett@care.org',
-            city: 'Oak Park',
-            state: 'IL',
-            categories: ['hair'],
-            availabilityStatus: 'available_now',
-            verificationBadge: 'Wig Guild Certified',
-            status: 'completed',
-            medicalNotes: '14-inch untreated virgin hair pledged and packaged for pediatric cranial oncology prosthetics.',
-            createdAt: '2024-03-12T16:20:00.000Z'
-          },
-          {
-            id: 'reg_don_004',
-            registeredByUserId: 'usr_marcus_vance',
-            registeredByUserEmail: 'marcus.vance@donorconnect4care.org',
-            registeredByUserName: 'Marcus Vance',
-            donorName: 'David K. Miller',
-            phone: '+1 (312) 555-0455',
-            email: 'david.miller@donorconnect4care.org',
-            city: 'Naperville',
-            state: 'IL',
-            categories: ['bone_tissue', 'blood'],
-            bloodGroup: 'B+',
-            availabilityStatus: 'scheduled',
-            verificationBadge: 'FACT / NMDP Registered',
-            status: 'scheduled',
-            medicalNotes: 'Allogeneic bone marrow harvest procedure scheduled for acute leukemia patient.',
-            scheduledDate: '2026-10-15',
-            createdAt: '2024-03-20T10:00:00.000Z'
-          }
-        ];
-        initialDonations.forEach(d => {
-          setDoc(doc(db, 'donation_registrations', d.id), d).catch(() => {});
-        });
-        setFirebaseDonationsList(initialDonations);
-      }
+      const donations = snapshot.docs.map(d => d.data() as FirebaseDonationRegistration);
+      setFirebaseDonationsList(donations);
+      const liveDonors: DonorProfile[] = donations.map(reg => ({
+        id: reg.id,
+        userId: reg.registeredByUserId,
+        donorName: reg.donorName,
+        bloodGroup: (reg.bloodGroup as BloodGroup) || 'O+',
+        city: reg.city || 'Hyderabad',
+        state: reg.state || 'Telangana',
+        distanceKm: 5,
+        availabilityStatus: (['available_now', 'available_24h', 'cooldown', 'on_call'].includes(reg.availabilityStatus) ? reg.availabilityStatus : 'available_now') as any,
+        isVerified: true,
+        verificationBadge: reg.verificationBadge || 'Registered Blood Donor',
+        categories: (reg.categories as DonationCategory[]) || ['blood'],
+        totalDonationsCount: 1,
+        privacySetting: 'direct_authorized',
+        bloodDetails: {
+          bloodGroup: (reg.bloodGroup as BloodGroup) || 'O+',
+          components: ['whole_blood', 'platelets'],
+          rhFactor: reg.bloodGroup?.includes('-') ? '-' : '+',
+          hemoglobinLevel: '14.2 g/dL',
+          lastDonationDate: '',
+          donationCount: 1,
+          eligibleForWholeBlood: true,
+          eligibleForPlatelets: true,
+          eligibleForPlasma: true
+        },
+        phone: reg.phone,
+        email: reg.email,
+        scheduledSlots: []
+      }));
+      setDonors(liveDonors);
     }, (error) => {
       console.warn('[Firestore] donation_registrations snapshot error:', error);
     });
     return () => unsubscribe();
   }, []);
 
-  const loginWithGoogle = async () => {
+  // Real-time Firestore donation_requests listener
+  useEffect(() => {
+    const q = query(collection(db, 'donation_requests'), orderBy('createdAt', 'desc'));
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const allItems = snapshot.docs.map(d => {
+        const data = d.data();
+        const requestId = data.id || d.id;
+        const item: DonationRequest = {
+          ...data,
+          id: requestId
+        } as DonationRequest;
+        const cleanedHospital = (item.hospitalName && (item.hospitalName.includes('Metro University') || item.hospitalName.includes('Organ Transplant')))
+          ? 'Hyderabad Blood Centre & Transfusion Hospital'
+          : item.hospitalName;
+        const isHyderabad = cleanedHospital?.includes('Hyderabad') || item.city?.toLowerCase() === 'chicago';
+        return {
+          ...item,
+          id: requestId,
+          hospitalName: cleanedHospital,
+          city: isHyderabad ? 'Hyderabad' : item.city,
+          state: isHyderabad ? 'Telangana' : item.state,
+          deadlineDate: item.deadlineDate ? item.deadlineDate.replace(/\bCST\b/g, 'IST').replace(/\bEST\b/g, 'IST').replace(/\bPST\b/g, 'IST') : item.deadlineDate
+        };
+      });
+
+      // Deduplicate Firestore requests strictly by unique request ID
+      const uniqueFirestore = new Map<string, DonationRequest>();
+      allItems.forEach(item => {
+        if (item.id && !uniqueFirestore.has(item.id)) {
+          uniqueFirestore.set(item.id, item);
+        }
+      });
+      const uniqueItems = Array.from(uniqueFirestore.values());
+
+      setFirestoreRequests(uniqueItems);
+      setRequests(uniqueItems);
+      const realCount = uniqueItems.filter(d => (d as any)._isDemoData === false).length;
+      setFirestoreRequestsCount(realCount);
+    }, (error) => {
+      console.warn('[Firestore] donation_requests snapshot error:', error);
+    });
+    return () => unsubscribe();
+  }, []);
+
+  // Real-time Firestore donor_responses listener (Phase 5)
+  const [donorResponses, setDonorResponses] = useState<DonorResponse[]>(() => {
+    const saved = localStorage.getItem('dofi_donor_responses');
+    return saved ? JSON.parse(saved) : [];
+  });
+
+  useEffect(() => {
+    localStorage.setItem('dofi_donor_responses', JSON.stringify(donorResponses));
+  }, [donorResponses]);
+
+  useEffect(() => {
+    // If not signed in to Firebase, rely on local state & localStorage for demo operation
+    if (!firebaseUser) return;
+
+    // Determine authorization scope:
+    // 1. Admin: Platform-wide visibility
+    // 2. Hospital: Responses belonging to blood requests for this hospital facility
+    // 3. Donor: Responses created by this authenticated donor only
+    const isAdmin = firebaseUser.email === 'mohammedayaan9683@gmail.com' || registeredAppUser?.role === 'admin';
+    const isHospitalStaff = registeredAppUser?.role === 'hospital_staff' || currentUser.role === 'hospital';
+
+    let q;
+    if (isAdmin) {
+      q = query(collection(db, 'donor_responses'), orderBy('createdAt', 'desc'));
+    } else if (isHospitalStaff) {
+      const orgId = registeredAppUser?.organizationId;
+      if (orgId) {
+        q = query(collection(db, 'donor_responses'), where('hospitalId', '==', orgId));
+      } else {
+        q = query(collection(db, 'donor_responses'), where('requesterId', '==', firebaseUser.uid));
+      }
+    } else {
+      q = query(collection(db, 'donor_responses'), where('donorUserId', '==', firebaseUser.uid));
+    }
+
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const list = snapshot.docs.map(d => d.data() as DonorResponse);
+      setDonorResponses(prev => {
+        // Merge Firestore records while preserving local responses created during session
+        const firestoreMap = new Map(list.map(item => [item.id, item]));
+        const merged = [...list];
+        for (const localItem of prev) {
+          if (!firestoreMap.has(localItem.id)) {
+            merged.push(localItem);
+          }
+        }
+        return merged;
+      });
+    }, (error) => {
+      console.warn('[Firestore] donor_responses scoped snapshot error:', error);
+    });
+    return () => unsubscribe();
+  }, [firebaseUser, registeredAppUser?.role, registeredAppUser?.organizationId, currentUser.role, currentUser.organizationId]);
+
+  const loginWithGoogle = async (intendedRole?: UserRole) => {
     setIsFirebaseLoading(true);
+    console.log('[AppContext] Initiating Google Sign-In with intendedRole:', intendedRole);
+    if (intendedRole) {
+      localStorage.setItem('dofi_user_role', intendedRole);
+      sessionStorage.setItem('dofi_role_chosen', '1');
+      switchUserRole(intendedRole);
+      if (intendedRole === 'hospital') {
+        setActiveTab('hospital');
+      } else if (intendedRole === 'admin') {
+        setActiveTab('admin');
+      } else {
+        setActiveTab('dashboard');
+      }
+    }
     try {
-      const appUser = await signInWithGoogle();
-      setRegisteredAppUser(appUser);
+      const fbUser = await signInWithGoogle();
+      console.log('[AppContext] Google Sign-In popup completed for user:', fbUser.uid, fbUser.email);
+      // The onAuthStateChanged listener handles setting firebaseUser and syncing Firestore
       const notif: NotificationItem = {
         id: `notif_login_${Date.now()}`,
-        userId: appUser.id,
+        userId: fbUser.uid,
         title: 'Google Sign-In Successful',
-        message: `Welcome, ${appUser.displayName}! Your account is securely connected to Firebase and tracked in Firestore.`,
+        message: `Welcome, ${fbUser.displayName || 'Community Member'}! Your account is securely connected to Firebase Auth.`,
         category: 'blood',
         urgency: 'standard',
         timestamp: 'Just now',
         isRead: false
       };
-      setNotifications(prev => [notif, ...prev]);
-    } catch (err) {
-      console.error('Firebase sign-in error:', err);
+      setNotifications(prev => [
+        notif,
+        ...prev.filter(n => !n.id.startsWith('notif_login_') || n.userId === fbUser.uid)
+      ]);
+    } catch (err: unknown) {
+      const errorObj = err as { code?: string; message?: string };
+      console.error('[AppContext] ❌ Google Sign-In failed:', errorObj?.code, errorObj?.message || err);
+      // Add a helpful notification if the popup was closed vs an actual error
+      if (errorObj?.code !== 'auth/popup-closed-by-user') {
+        const notif: NotificationItem = {
+          id: `notif_err_${Date.now()}`,
+          userId: 'system',
+          title: 'Sign-In Notice',
+          message: errorObj?.code === 'auth/operation-not-allowed'
+            ? 'Google Sign-In is not enabled in Firebase Console. Please enable it under Authentication > Sign-in method.'
+            : errorObj?.code === 'auth/unauthorized-domain'
+            ? 'This domain is not authorized for Google Sign-In. Add localhost to Authorized Domains in Firebase Console.'
+            : `Authentication could not be completed: ${errorObj?.message || 'Unknown error'}`,
+          category: 'blood',
+          urgency: 'emergency',
+          timestamp: 'Just now',
+          isRead: false
+        };
+        setNotifications(prev => [notif, ...prev]);
+      }
     } finally {
       setIsFirebaseLoading(false);
     }
@@ -414,6 +495,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const logoutFirebase = async () => {
     try {
+      sessionStorage.removeItem('dofi_role_chosen');
+      localStorage.removeItem('dofi_user_role');
       await signOutFirebaseUser();
       setFirebaseUser(null);
       setRegisteredAppUser(null);
@@ -431,8 +514,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       donorName: data.donorName || currentUser.name,
       phone: data.phone || currentUser.phone,
       email: data.email || currentUser.email,
-      city: data.city || currentUser.city || 'Chicago',
-      state: data.state || currentUser.state || 'IL',
+      city: data.city || currentUser.city || 'Hyderabad',
+      state: data.state || currentUser.state || 'Telangana',
       categories: data.categories || ['blood'],
       bloodGroup: data.bloodGroup || (data.categories?.includes('blood') ? 'O-' : undefined),
       availabilityStatus: data.availabilityStatus || 'available_now',
@@ -448,18 +531,18 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   // AI Suite specific state
   const [aiPreselectedRequest, setAiPreselectedRequest] = useState<DonationRequest | null>(null);
   const [aiPreselectedDonor, setAiPreselectedDonor] = useState<DonorProfile | null>(null);
-  const [aiActiveModule, setAiActiveModule] = useState<'crossmatch' | 'biomatch_ml' | 'vision_lab' | 'oncology_trials' | 'screener' | 'dispatch' | 'lab' | 'gratitude'>('crossmatch');
+  const [aiActiveModule, setAiActiveModule] = useState<'crossmatch' | 'biomatch_ml' | 'vision_lab' | 'oncology_trials' | 'screener' | 'dispatch' | 'lab' | 'gratitude'>('biomatch_ml');
 
   const openAiWithRequest = (req: DonationRequest) => {
     setAiPreselectedRequest(req);
-    setAiActiveModule('crossmatch');
+    setAiActiveModule('biomatch_ml');
     setSelectedRequest(null);
     setActiveTab('ai-suite');
   };
 
   const openAiWithDonor = (donor: DonorProfile) => {
     setAiPreselectedDonor(donor);
-    setAiActiveModule('crossmatch');
+    setAiActiveModule('biomatch_ml');
     setSelectedDonor(null);
     setActiveTab('ai-suite');
   };
@@ -508,12 +591,38 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   }, [reports]);
 
   const switchUserRole = (role: UserRole) => {
-    const targetUser = DEMO_USERS[role] || {
-      ...currentUser,
-      role,
-      name: role === 'hospital' ? 'Dr. Sarah Chen, MD' : role === 'admin' ? 'Compliance Administrator' : role === 'recipient' ? 'Elena Rostova (Recipient)' : 'Marcus Vance (Donor)'
+    // A role chosen in the browser is only an entry preference. It must never
+    // elevate an unauthorized user to administrator privileges.
+    const isAuthorizedAdmin = Boolean(
+      (firebaseUser && firebaseUser.email === 'mohammedayaan9683@gmail.com') ||
+      registeredAppUser?.role === 'admin'
+    );
+    if (role === 'admin' && !isAuthorizedAdmin) {
+      console.warn('[AppContext] Ignored unauthorised client-side admin role selection.');
+      return;
+    }
+
+    sessionStorage.setItem('dofi_role_chosen', '1');
+    localStorage.setItem('dofi_user_role', role);
+
+    // Generic display names for demo roles
+    const demoNames: Record<UserRole, string> = {
+      hospital: 'Hospital / Clinical Coordinator',
+      user: 'General User',
+      admin: 'Platform Administrator',
+      donor: 'Voluntary Blood Donor'
     };
-    setCurrentUser(targetUser);
+    const targetUser = DEMO_USERS[role] || currentUser;
+    // Preserve real Firebase user's ID, name, email, and photo
+    setCurrentUser({
+      ...targetUser,
+      id: firebaseUser ? firebaseUser.uid : targetUser.id,
+      role,
+      name: firebaseUser?.displayName || demoNames[role],
+      email: firebaseUser?.email || targetUser.email,
+      avatarUrl: firebaseUser?.photoURL || targetUser.avatarUrl,
+      organizationId: registeredAppUser?.organizationId || (firebaseUser ? undefined : targetUser.organizationId)
+    });
   };
 
   const computeMatchScore = (request: DonationRequest, donor: DonorProfile): number => {
@@ -584,7 +693,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const createRequest = (newReq: Partial<DonationRequest>) => {
-    const id = `req_${Date.now()}`;
+    const id = newReq.id || `req_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
     const fullRequest: DonationRequest = {
       id,
       category: newReq.category || 'blood',
@@ -594,10 +703,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       requesterId: currentUser.id,
       requesterName: currentUser.name,
       requesterRole: currentUser.role,
-      hospitalId: newReq.hospitalId || 'org_metro_univ',
-      hospitalName: newReq.hospitalName || 'Metro University Hospital & Organ Transplant Institute',
-      city: newReq.city || currentUser.city || 'Chicago',
-      state: newReq.state || currentUser.state || 'IL',
+      hospitalId: newReq.hospitalId || 'org_city_blood_bank',
+      hospitalName: newReq.hospitalName || 'City Blood Center & General Hospital',
+      city: newReq.city || currentUser.city || 'Hyderabad',
+      state: newReq.state || currentUser.state || 'Telangana',
       urgency: newReq.urgency || 'standard',
       status: 'pending',
       deadlineHoursRemaining: newReq.deadlineHoursRemaining || (newReq.urgency === 'emergency' ? 6 : 48),
@@ -627,7 +736,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const matchedDonors = donors.filter(d => computeMatchScore(fullRequest, d) >= 70);
     fullRequest.matchedDonorIds = matchedDonors.map(d => d.id);
 
-    setRequests(prev => [fullRequest, ...prev]);
+    setRequests(prev => [fullRequest, ...prev.filter(r => r.id !== id)]);
+
+    // Persist new request to Firestore donation_requests collection
+    setDoc(doc(db, 'donation_requests', id), {
+      ...fullRequest,
+      _isDemoData: false,
+      _createdVia: 'dofi_app'
+    }).catch(err => console.warn('[Firestore] donation_requests write failed:', err));
 
     // Send notification
     const newNotif: NotificationItem = {
@@ -692,6 +808,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       return updated;
     }));
 
+    const firestoreUpdate: Record<string, unknown> = { status: newStatus };
+    if (newStatus === 'completed') {
+      firestoreUpdate.unitsFulfilled = requests.find(request => request.id === requestId)?.unitsNeeded || 1;
+    }
+    updateDoc(doc(db, 'donation_requests', requestId), firestoreUpdate)
+      .catch(err => console.warn('[Firestore] donation request status update failed:', err));
+
     // Notification
     const targetReq = requests.find(r => r.id === requestId);
     if (targetReq) {
@@ -709,6 +832,95 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
   };
 
+  const respondToRequest = async (requestId: string, notes?: string): Promise<{ success: boolean; message: string }> => {
+    const targetReq = requests.find(r => r.id === requestId)
+      || (firestoreRequests as DonationRequest[]).find(r => r.id === requestId);
+    if (!targetReq) {
+      return { success: false, message: 'Request not found.' };
+    }
+    if (targetReq.status === 'completed' || targetReq.status === 'cancelled') {
+      return { success: false, message: 'This request is already fulfilled or cancelled.' };
+    }
+
+    const donorUserId = firebaseUser ? firebaseUser.uid : currentUser.id;
+    const donorDisplayName = firebaseUser ? (firebaseUser.displayName || currentUser.name) : currentUser.name;
+
+    // Prevent duplicate response from the same donor
+    const alreadyResponded = donorResponses.some(
+      r => r.requestId === requestId && (
+        r.donorUserId === donorUserId ||
+        (donorUserId.startsWith('usr_') && r.donorName.toLowerCase() === donorDisplayName.toLowerCase())
+      )
+    );
+    if (alreadyResponded) {
+      return { success: false, message: 'You have already responded to this blood request.' };
+    }
+
+    // Determine donor blood group
+    const myDonorProfile = donors.find(d => d.userId === currentUser.id || (firebaseUser && d.userId === firebaseUser.uid))
+      || (currentUser.role === 'donor' ? donors.find(d => d.id === 'dnr_001') : undefined);
+    const latestReg = firebaseDonationsList.find(d => d.registeredByUserId === (firebaseUser?.uid || currentUser.id));
+    const donorBloodGroup: BloodGroup = myDonorProfile?.bloodDetails?.bloodGroup || (latestReg?.bloodGroup as BloodGroup) || 'O+';
+
+    const safeUid = donorUserId.replace(/[^a-zA-Z0-9_-]/g, '_');
+    const responseId = `resp_${requestId}_${safeUid}`;
+    const nowIso = new Date().toISOString();
+
+    const newResponse: DonorResponse = {
+      id: responseId,
+      requestId,
+      donorId: myDonorProfile?.id || `dnr_${safeUid.slice(0, 8)}`,
+      donorUserId,
+      donorName: donorDisplayName,
+      bloodGroup: donorBloodGroup,
+      city: currentUser.city || 'Hyderabad',
+      status: 'available',
+      createdAt: nowIso,
+      updatedAt: nowIso,
+      note: notes,
+      hospitalId: targetReq.hospitalId,
+      requesterId: targetReq.requesterId
+    };
+
+    // 1. Update local state
+    setDonorResponses(prev => [newResponse, ...prev.filter(r => r.id !== responseId)]);
+
+    // 2. Persist to Firestore
+    setDoc(doc(db, 'donor_responses', responseId), newResponse)
+      .catch(err => console.warn('[Firestore] donor_responses write failed:', err));
+
+    // 3. Update request status to 'in_progress' (DONOR RESPONDED) if pending/verified/matched
+    if (['pending', 'verified', 'matched'].includes(targetReq.status)) {
+      updateRequestStatus(
+        requestId,
+        'in_progress',
+        `Donor ${donorDisplayName} (${donorBloodGroup}) responded: "I'm Available". Hospital coordination pending.`
+      );
+    }
+
+    // 4. Send notification
+    const responseNotif: NotificationItem = {
+      id: `notif_resp_${Date.now()}`,
+      userId: currentUser.id,
+      title: `Response Sent: ${targetReq.hospitalName}`,
+      message: `You marked yourself available for ${targetReq.bloodRequirements?.targetBloodGroup || 'blood'} request at ${targetReq.hospitalName}. Hospital has been alerted.`,
+      category: 'blood',
+      urgency: targetReq.urgency,
+      timestamp: 'Just now',
+      isRead: false
+    };
+    setNotifications(prev => [responseNotif, ...prev]);
+
+    return { success: true, message: 'Response sent! Hospital notified.' };
+  };
+
+  const updateDonorResponseStatus = async (responseId: string, newStatus: DonorResponse['status']): Promise<void> => {
+    const nowIso = new Date().toISOString();
+    setDonorResponses(prev => prev.map(r => r.id === responseId ? { ...r, status: newStatus, updatedAt: nowIso } : r));
+    updateDoc(doc(db, 'donor_responses', responseId), { status: newStatus, updatedAt: nowIso })
+      .catch(err => console.warn('[Firestore] updateDonorResponseStatus failed:', err));
+  };
+
   const registerDonor = (donorData: Partial<DonorProfile>) => {
     const existingIndex = donors.findIndex(d => d.userId === currentUser.id);
     if (existingIndex >= 0) {
@@ -718,7 +930,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         next[existingIndex] = {
           ...next[existingIndex],
           ...donorData,
-          isVerified: true
+          isVerified: false,
+          verificationBadge: 'Profile submitted — verification pending'
         };
         return next;
       });
@@ -729,12 +942,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         userId: currentUser.id,
         donorName: currentUser.name,
         avatarUrl: currentUser.avatarUrl,
-        city: currentUser.city || 'Chicago',
-        state: currentUser.state || 'IL',
+        city: currentUser.city || 'Hyderabad',
+        state: currentUser.state || 'Telangana',
         distanceKm: 2.5,
         categories: donorData.categories || ['blood'],
-        isVerified: true,
-        verificationBadge: 'Verified Platform Registrant',
+        isVerified: false,
+        verificationBadge: 'Profile submitted — verification pending',
         availabilityStatus: donorData.availabilityStatus || 'available_now',
         totalDonationsCount: 1,
         phone: currentUser.phone,
@@ -754,8 +967,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       categories: donorData.categories || ['blood'],
       bloodGroup: donorData.bloodDetails?.bloodGroup,
       availabilityStatus: donorData.availabilityStatus || 'available_now',
-      city: currentUser.city || 'Chicago',
-      state: currentUser.state || 'IL',
+      city: currentUser.city || 'Hyderabad',
+      state: currentUser.state || 'Telangana',
       phone: currentUser.phone,
       email: currentUser.email,
       status: 'active'
@@ -764,14 +977,19 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const notif: NotificationItem = {
       id: `notif_reg_${Date.now()}`,
       userId: currentUser.id,
-      title: 'Donor Registry Updated',
-      message: 'Your donor profile and preferences have been successfully recorded with verified status.',
+      title: 'Donor Profile Submitted',
+      message: 'Your blood donor profile and availability have been recorded. Verification is pending confirmation.',
       category: donorData.categories?.[0] || 'blood',
       urgency: 'standard',
       timestamp: 'Just now',
       isRead: false
     };
-    setNotifications(prev => [notif, ...prev]);
+    setNotifications(prev => {
+      const filtered = prev.filter(
+        item => !(item.userId === notif.userId && item.title === notif.title && item.message === notif.message)
+      );
+      return [notif, ...filtered];
+    });
   };
 
   const approveVerification = (id: string, notes?: string) => {
@@ -962,16 +1180,40 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setNotifications(prev => [notif, ...prev]);
   };
 
+  // --- LIVE FIRESTORE-BACKED STATS ---
+  // Only count real (non-demo) documents. If Firestore is empty, counts show 0.
+  const liveActiveRequests = firestoreRequests.filter(
+    r => r._isDemoData !== true && r.status !== 'completed' && r.status !== 'cancelled'
+  ).length;
+  const liveCriticalEmergencies = firestoreRequests.filter(
+    r => r._isDemoData !== true && r.urgency === 'emergency' && r.status !== 'completed'
+  ).length;
+  const liveBloodRequests = firestoreRequests.filter(
+    r => r._isDemoData !== true && r.category === 'blood' && r.status !== 'completed' && r.status !== 'cancelled'
+  ).length;
+  const liveOrganRequests = firestoreRequests.filter(
+    r => r._isDemoData !== true && r.category === 'organ' && r.status !== 'completed' && r.status !== 'cancelled'
+  ).length;
+  // Available donors: real Firestore donation_registrations with available status
+  const liveAvailableDonors = firebaseDonationsList.filter(
+    d => d.availabilityStatus === 'available_now' || d.availabilityStatus === 'available_24h'
+  ).length;
+  // Registered donors: all real Firestore donation_registrations
+  const liveRegisteredDonors = firebaseDonationsList.length;
+  // Registered users from Firestore users collection
+  const liveRegisteredUsers = registeredAppUsersList.length;
+
   const impactStats: ImpactStats = {
-    activeRequests: requests.filter(r => r.status !== 'completed' && r.status !== 'cancelled').length,
-    availableDonors: donors.filter(d => d.availabilityStatus === 'available_now' || d.availabilityStatus === 'available_24h').length,
-    criticalEmergencies: requests.filter(r => r.urgency === 'emergency' && r.status !== 'completed').length,
+    activeRequests: liveActiveRequests,
+    availableDonors: liveAvailableDonors,
+    criticalEmergencies: liveCriticalEmergencies,
     verifiedHospitals: organizations.filter(o => o.isVerified).length,
-    livesTouchedCount: 148,
-    bloodUnitsCollected: 412,
-    hairWigsGifted: 53,
-    organTransplantsFacilitated: 19,
-    marrowPledgesRegistered: 84
+    // Below are demo/placeholder lifetime stats — not derived from live Firestore data
+    livesTouchedCount: 0,
+    bloodUnitsCollected: 0,
+    hairWigsGifted: 0,
+    organTransplantsFacilitated: 0,
+    marrowPledgesRegistered: 0
   };
 
   return (
@@ -1041,9 +1283,22 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         registeredAppUsersList,
         firebaseDonationsList,
         isFirebaseLoading,
+        isAuthReady,
+        firestoreRequests,
+        firestoreRequestsCount,
+        liveActiveRequests,
+        liveCriticalEmergencies,
+        liveBloodRequests,
+        liveOrganRequests,
+        liveAvailableDonors,
+        liveRegisteredDonors,
+        liveRegisteredUsers,
         loginWithGoogle,
         logoutFirebase,
-        registerDonationToFirebase
+        registerDonationToFirebase,
+        donorResponses,
+        respondToRequest,
+        updateDonorResponseStatus
       }}
     >
       {children}

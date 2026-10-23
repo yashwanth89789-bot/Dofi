@@ -72,7 +72,7 @@ export const RegistrationsAuthWrapper: React.FC<RegistrationsAuthWrapperProps> =
               Access Denied
             </h1>
             <p className="text-sm text-slate-600 leading-relaxed pt-1">
-              You do not have permission to view the <strong>Registrations Database</strong>. In compliance with the National Organ Transplant Act (NOTA) and HIPAA confidentiality governance, donor and patient registration logs can be accessed only by verified <strong>Doctors</strong> and authorized <strong>Admins</strong>.
+              You do not have permission to view the <strong>Registrations Database</strong>. In compliance with healthcare confidentiality governance and clinical directory protection standards, blood donor registration logs can be accessed only by verified <strong>Healthcare Staff</strong> and authorized <strong>Admins</strong>.
             </p>
           </div>
 

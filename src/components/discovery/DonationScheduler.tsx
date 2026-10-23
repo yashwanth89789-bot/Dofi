@@ -38,7 +38,7 @@ export const DonationScheduler: React.FC<DonationSchedulerProps> = ({ donor }) =
   const [customStartTime, setCustomStartTime] = useState('09:00');
   const [customEndTime, setCustomEndTime] = useState('12:00');
   const [procedureType, setProcedureType] = useState<DonationCategory>(donor.categories[0] || 'blood');
-  const [hospitalPreference, setHospitalPreference] = useState(organizations[0]?.name || 'Metro University Hospital & Organ Transplant Institute');
+  const [hospitalPreference, setHospitalPreference] = useState(organizations[0]?.name || 'Hyderabad Blood Centre & Transfusion Hospital');
   const [notes, setNotes] = useState('');
   const [justAddedToast, setJustAddedToast] = useState(false);
 

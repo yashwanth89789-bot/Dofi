@@ -1,12 +1,9 @@
 {
-  "projectId": "gen-lang-client-0971343093",
-  "appId": "1:776863894764:web:5c4cae9ac14300d6ef69c9",
-  "apiKey": "AIzaSyAGPAZZTV2oPuKtMmZmGqANciPA3WbU5MU",
-  "authDomain": "gen-lang-client-0971343093.firebaseapp.com",
-  "firestoreDatabaseId": "ai-studio-donorconnect4car-7654f8b1-baaa-4315-a4e6-78c9d1e4206c",
-  "storageBucket": "gen-lang-client-0971343093.firebasestorage.app",
-  "messagingSenderId": "776863894764",
-  "measurementId": "",
-  "oAuthClientId": "776863894764-ec43to0gj6p61odpda1hj09lfeu4sqot.apps.googleusercontent.com",
-  "recaptchaSiteKey": ""
+  "apiKey": "AIzaSyDy8V9v5meEo8pSLZgmDgNjUkkB6p8cshQ",
+  "authDomain": "dofi-healthcare-platform.firebaseapp.com",
+  "projectId": "dofi-healthcare-platform",
+  "storageBucket": "dofi-healthcare-platform.firebasestorage.app",
+  "messagingSenderId": "572022504802",
+  "appId": "1:572022504802:web:c5cbc8097c919f56c0403b",
+  "measurementId": "G-DTENX7SSFK"
 }

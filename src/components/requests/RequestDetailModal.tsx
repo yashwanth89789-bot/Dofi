@@ -31,20 +31,24 @@ export const RequestDetailModal: React.FC<RequestDetailModalProps> = ({ request,
     setReportingTarget,
     setIsReportModalOpen,
     currentUser,
-    openAiWithRequest,
-    setActiveTab
+    setActiveTab,
+    donorResponses,
+    respondToRequest,
+    updateDonorResponseStatus,
+    firebaseUser
   } = useApp();
 
   const [transitionNote, setTransitionNote] = useState('');
   const [showStatusAdvance, setShowStatusAdvance] = useState(false);
+  const [isResponding, setIsResponding] = useState(false);
 
   if (!request) return null;
 
   // Status progression stages
   const stages: { key: RequestStatus; label: string }[] = [
     { key: 'pending', label: '1. Pending Review' },
-    { key: 'verified', label: '2. Hospital Verified' },
-    { key: 'matched', label: '3. Donors Matched' },
+    { key: 'verified', label: '2. Facility Review' },
+    { key: 'matched', label: '3. Donor Discovery' },
     { key: 'in_progress', label: '4. In Progress' },
     { key: 'completed', label: '5. Completed' }
   ];
@@ -222,14 +226,14 @@ export const RequestDetailModal: React.FC<RequestDetailModalProps> = ({ request,
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 pt-2 border-t border-emerald-200/70 text-[11px] text-emerald-900">
                 <div className="flex items-center gap-1.5 font-medium">
                   <ShieldCheck className="h-4 w-4 text-emerald-700" />
-                  <span>Verified Clinical Audit Trail</span>
+                  <span>Request Record</span>
                 </div>
                 <div className="flex items-center gap-1.5 font-medium">
                   <Clock className="h-4 w-4 text-emerald-700" />
-                  <span>Units Fulfilled: {request.unitsFulfilled || request.unitsNeeded}/{request.unitsNeeded || 1}</span>
+                  <span>Units: {request.unitsFulfilled || request.unitsNeeded}/{request.unitsNeeded || 1}</span>
                 </div>
                 <div className="text-left sm:text-right">
-                  <span className="text-[10px] text-emerald-700 font-mono">Status: Permanent Clinical Archive</span>
+                  <span className="text-[10px] text-emerald-700 font-mono">Archived record</span>
                 </div>
               </div>
 
@@ -288,62 +292,108 @@ export const RequestDetailModal: React.FC<RequestDetailModalProps> = ({ request,
                   <div>STAT Crossmatch Required: <strong>{request.bloodRequirements.isStatCrossmatchRequired ? 'YES (Immediate)' : 'Standard'}</strong></div>
                 </div>
               )}
-
-              {request.organRequirements && (
-                <div className="p-2.5 bg-teal-50/70 border border-teal-200 rounded text-teal-950 text-[11px] space-y-1">
-                  <div>Organ: <strong>{request.organRequirements.organ.replace('_', ' ').toUpperCase()}</strong></div>
-                  <div>Transplant Surgeon: <strong>{request.organRequirements.transplantSurgeonName}</strong></div>
-                  <div>Clinical Approval Ref: <strong className="font-mono">{request.organRequirements.clinicalBoardApprovalRef}</strong></div>
-                  <div className="text-[10px] text-teal-800 italic">Strictly non-commercial hospital altruistic or paired donor exchange.</div>
-                </div>
-              )}
-
-              {request.boneTissueRequirements && (
-                <div className="p-2.5 bg-indigo-50/70 border border-indigo-200 rounded text-indigo-950 text-[11px] space-y-1">
-                  <div>Tissue Type: <strong>{request.boneTissueRequirements.tissueType.replace('_', ' ')}</strong></div>
-                  <div>Required HLA Loci: <strong className="font-mono">{request.boneTissueRequirements.requiredHlaLoci?.join(', ') || 'High Resolution Allogeneic Match'}</strong></div>
-                  <div>Conditioning Protocol: <strong>{request.boneTissueRequirements.transplantProtocol}</strong></div>
-                </div>
-              )}
-
-              {request.hairRequirements && (
-                <div className="p-2.5 bg-amber-50/70 border border-amber-200 rounded text-amber-950 text-[11px] space-y-1">
-                  <div>Min Length: <strong>{request.hairRequirements.minInches} Inches</strong></div>
-                  <div>Wig Partner: <strong>{request.hairRequirements.wigMakerPartner}</strong></div>
-                  <div>Conditions Accepted: <strong>{request.hairRequirements.conditionAccepted.join(', ')}</strong></div>
-                </div>
-              )}
             </div>
           </div>
 
-          {/* AI Clinical Cross-Match Direct Action */}
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-4 bg-gradient-to-r from-teal-950 via-slate-900 to-indigo-950 text-white rounded-xl border border-teal-800/50 shadow-xs">
-            <div className="flex items-center gap-3">
-              <div className="h-9 w-9 rounded-lg bg-teal-500/20 text-teal-300 flex items-center justify-center border border-teal-400/30 shrink-0">
-                <Sparkles className="h-4 w-4" />
+
+          {/* ── Real Donor Responses Section (Phase 5) ── */}
+          <div className="space-y-3 p-4 bg-teal-50/50 border border-teal-200 rounded-xl">
+            <div className="flex items-center justify-between">
+              <div>
+                <h4 className="font-bold text-slate-900 text-xs uppercase tracking-wider flex items-center gap-1.5">
+                  <ShieldCheck className="h-4 w-4 text-teal-600" />
+                  <span>Donor Responses & Availability</span>
+                </h4>
+                <p className="text-[11px] text-slate-500 mt-0.5">
+                  Live coordination between eligible blood donors and hospital clinical staff
+                </p>
               </div>
-              <div className="space-y-0.5">
-                <div className="text-xs font-bold text-white flex items-center gap-1.5">
-                  <span>AI Clinical Cross-Match & HLA Predictor</span>
-                  <span className="px-1.5 py-0.2 rounded bg-teal-500/30 text-teal-300 text-[9px] font-mono">
-                    GenAI
+
+              {/* Donor response button / status indicator */}
+              <div>
+                {donorResponses.some(
+                  r => r.requestId === request.id && (
+                    r.donorUserId === currentUser.id ||
+                    (firebaseUser && r.donorUserId === firebaseUser.uid)
+                  )
+                ) ? (
+                  <span className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg bg-emerald-100 text-emerald-800 border border-emerald-300 text-xs font-bold shadow-2xs">
+                    <CheckCircle2 className="h-3.5 w-3.5 text-emerald-600" />
+                    <span>Response Sent</span>
                   </span>
-                </div>
-                <div className="text-[11px] text-slate-300">
-                  Perform deep loci matching, PRA antibody sensitivity, and cold ischemia analysis for this patient.
-                </div>
+                ) : request.status !== 'completed' && request.status !== 'cancelled' ? (
+                  <button
+                    onClick={async () => {
+                      setIsResponding(true);
+                      try {
+                        await respondToRequest(request.id);
+                      } finally {
+                        setIsResponding(false);
+                      }
+                    }}
+                    disabled={isResponding}
+                    className="inline-flex items-center gap-1 px-4 py-2 rounded-lg bg-teal-600 hover:bg-teal-700 text-white text-xs font-bold shadow-xs transition cursor-pointer disabled:opacity-50"
+                  >
+                    <span>{isResponding ? 'Sending...' : "I'm Available"}</span>
+                  </button>
+                ) : null}
               </div>
             </div>
-            <button
-              onClick={() => {
-                onClose();
-                openAiWithRequest(request);
-              }}
-              className="px-4 py-2 bg-teal-500 hover:bg-teal-400 text-slate-950 font-bold text-xs rounded-lg transition shadow-xs cursor-pointer flex items-center justify-center gap-1.5 shrink-0"
-            >
-              <span>Run AI Cross-Match</span>
-              <ArrowRight className="h-3.5 w-3.5" />
-            </button>
+
+            <p className="text-[11px] text-amber-800 bg-amber-50 border border-amber-200/70 p-2 rounded">
+              <strong>Clinical Notice:</strong> Potential match — final eligibility must be confirmed by the hospital. Dofi does not make final medical determinations.
+            </p>
+
+            {/* List of responses for this request */}
+            {donorResponses.filter(r => r.requestId === request.id).length === 0 ? (
+              <div className="p-3 text-center text-xs text-slate-400 bg-white rounded-lg border border-slate-200">
+                No donor responses yet. When donors respond &quot;I&apos;m Available&quot;, their responses appear here.
+              </div>
+            ) : (
+              <div className="space-y-2">
+                {donorResponses
+                  .filter(r => r.requestId === request.id)
+                  .map(resp => (
+                    <div
+                      key={resp.id}
+                      className="p-3 bg-white rounded-lg border border-slate-200 flex items-center justify-between gap-3 shadow-2xs"
+                    >
+                      <div className="flex items-center gap-2.5">
+                        <div className="h-8 w-8 rounded-full bg-teal-100 text-teal-800 font-black text-xs flex items-center justify-center">
+                          {resp.bloodGroup}
+                        </div>
+                        <div>
+                          <div className="text-xs font-bold text-slate-900">{resp.donorName}</div>
+                          <div className="text-[10px] text-slate-400">
+                            {resp.city} · Responded {new Date(resp.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-2">
+                        <span className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider ${
+                          resp.status === 'confirmed'
+                            ? 'bg-sky-100 text-sky-800 border border-sky-200'
+                            : resp.status === 'fulfilled'
+                            ? 'bg-emerald-100 text-emerald-800 border border-emerald-200'
+                            : 'bg-teal-50 text-teal-700 border border-teal-200'
+                        }`}>
+                          {resp.status}
+                        </span>
+
+                        {(currentUser.role === 'hospital' || currentUser.role === 'admin') && resp.status === 'available' && (
+                          <button
+                            onClick={() => updateDonorResponseStatus(resp.id, 'confirmed')}
+                            className="px-2 py-1 text-[11px] font-semibold text-sky-700 bg-sky-50 hover:bg-sky-100 rounded transition cursor-pointer"
+                          >
+                            Confirm Match
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+              </div>
+            )}
           </div>
 
           {/* Compatibility Matching Engine Results */}

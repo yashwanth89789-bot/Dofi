@@ -1,6 +1,6 @@
 {
-  "name": "DonorConnect 4Care",
-  "description": "Modern 4-in-1 Healthcare Donor & Recipient Assistance Platform for Blood, Organ, Bone & Tissue, and Hair donation matching with clinical verification and ethical governance.",
+  "name": "Dofi",
+  "description": "Blood donation coordination platform connecting hospitals and donors through real-time Firebase workflows.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

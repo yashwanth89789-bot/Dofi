@@ -68,10 +68,7 @@ export const RegistrationsDatabaseView: React.FC = () => {
     currentUser.hospitalAffiliation !== undefined ||
     registeredAppUser?.role === 'hospital_staff'
   );
-  const isRecipient = !isAdmin && !isDoctor && (
-    currentUser.role === 'recipient' ||
-    registeredAppUser?.role === 'recipient'
-  );
+  const isRecipient = !isAdmin && !isDoctor && (currentUser.role === 'user' || (currentUser.role as any) === 'recipient' || (registeredAppUser?.role as any) === 'recipient');
   const isOther = !isAdmin && !isDoctor && !isRecipient;
 
   const [activeSubTab, setActiveSubTab] = useState<'donations' | 'users' | 'json'>('donations');
@@ -383,9 +380,9 @@ export const RegistrationsDatabaseView: React.FC = () => {
             </p>
           </button>
 
-          {/* Persona 2: Recipient */}
+          {/* Persona 2: General User */}
           <button
-            onClick={() => switchUserRole('recipient')}
+            onClick={() => switchUserRole('user')}
             className={`p-3 rounded-xl border text-left transition-all cursor-pointer flex flex-col justify-between ${
               isRecipient
                 ? 'bg-amber-50/80 border-amber-500 ring-2 ring-amber-500/20 shadow-xs'
@@ -395,7 +392,7 @@ export const RegistrationsDatabaseView: React.FC = () => {
             <div className="flex items-center justify-between">
               <span className="font-bold text-xs flex items-center gap-1.5 text-amber-900">
                 <HeartHandshake className="h-3.5 w-3.5 text-amber-600" />
-                <span>🩸 Recipients</span>
+                <span>General User</span>
               </span>
               {isRecipient && (
                 <span className="text-[10px] bg-amber-600 text-white font-bold px-1.5 py-0.2 rounded-full">
@@ -552,7 +549,7 @@ export const RegistrationsDatabaseView: React.FC = () => {
               <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg bg-slate-800 border border-slate-700 text-slate-300">
                 <span>Not signed in with Firebase.</span>
                 <button
-                  onClick={loginWithGoogle}
+                  onClick={() => loginWithGoogle()}
                   disabled={isFirebaseLoading}
                   className="px-2.5 py-0.5 rounded bg-white text-slate-900 font-bold hover:bg-slate-100 transition cursor-pointer flex items-center gap-1"
                 >
@@ -1023,7 +1020,7 @@ export const RegistrationsDatabaseView: React.FC = () => {
                             {/* 🔒 Other User Action */}
                             {isOther && (
                               <button
-                                onClick={() => switchUserRole('recipient')}
+                                onClick={() => switchUserRole('user')}
                                 className="px-2.5 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded font-medium text-[11px] transition cursor-pointer flex items-center gap-1 ml-auto"
                                 title="Switch to Recipient view to request this donor"
                               >
@@ -1075,7 +1072,7 @@ export const RegistrationsDatabaseView: React.FC = () => {
 
             <div className="flex items-center gap-1.5 flex-wrap text-xs">
               <span className="text-slate-400 text-[11px] font-semibold">Role:</span>
-              {['all', 'donor', 'recipient', 'hospital_staff', 'admin'].map(r => (
+              {['all', 'user', 'donor', 'hospital_staff', 'admin'].map(r => (
                 <button
                   key={r}
                   onClick={() => setSelectedRoleFilter(r)}
@@ -1164,7 +1161,7 @@ export const RegistrationsDatabaseView: React.FC = () => {
                                   ? 'bg-purple-50 text-purple-700 border border-purple-200'
                                   : user.role === 'hospital_staff'
                                   ? 'bg-indigo-50 text-indigo-700 border border-indigo-200'
-                                  : user.role === 'recipient'
+                                  : (user.role as string) === 'user' || (user.role as string) === 'recipient'
                                   ? 'bg-amber-50 text-amber-700 border border-amber-200'
                                   : 'bg-teal-50 text-teal-700 border border-teal-200'
                               }`}>

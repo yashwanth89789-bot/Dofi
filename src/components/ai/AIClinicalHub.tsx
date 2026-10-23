@@ -1,7 +1,6 @@
 import React from 'react';
 import {
   Sparkles,
-  GitCompare,
   ShieldCheck,
   AlertOctagon,
   FileText,
@@ -19,7 +18,6 @@ import {
   BrainCircuit
 } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
-import { AICrossmatchView } from './AICrossmatchView';
 import { BioMatchMLView } from './BioMatchMLView';
 import { AIVisionLabView } from './AIVisionLabView';
 import { AIOncologyTrialView } from './AIOncologyTrialView';
@@ -60,43 +58,35 @@ export const AIClinicalHub: React.FC = () => {
       isNew: true,
     },
     {
-      id: 'crossmatch',
-      label: 'Cross-Match & HLA Copilot',
-      subtitle: 'Immunological & Locus Matching',
-      icon: GitCompare,
-      badge: 'Clinically Validated',
-      color: 'teal',
-    },
-    {
       id: 'screener',
-      label: 'Eligibility & Deferral Triage',
-      subtitle: 'FDA & AABB Pre-Screening',
+      label: 'Eligibility Triage Assistant',
+      subtitle: 'Donor Pre-Screening Prototype',
       icon: ShieldCheck,
-      badge: 'Zero-Risk Triage',
+      badge: 'AI Demo',
       color: 'emerald',
     },
     {
       id: 'dispatch',
-      label: 'STAT Emergency Dispatch',
-      subtitle: 'Shortage & Courier Routing',
+      label: 'Emergency Dispatch Assist',
+      subtitle: 'Routing Logistics Prototype',
       icon: AlertOctagon,
-      badge: 'Trauma Code 99',
+      badge: 'AI Demo',
       color: 'rose',
     },
     {
       id: 'lab',
-      label: 'DonorLab Diagnostic OCR',
-      subtitle: 'Biomarker Translation',
+      label: 'Lab Report Interpreter',
+      subtitle: 'Plain Language Translation',
       icon: Activity,
-      badge: 'Plain Language',
+      badge: 'AI Demo',
       color: 'blue',
     },
     {
       id: 'gratitude',
-      label: 'Hope & Gratitude Crafter',
-      subtitle: 'Ethical Anonymized Letters',
+      label: 'Gratitude Letter Crafter',
+      subtitle: 'Anonymized Correspondence',
       icon: Heart,
-      badge: 'NOTA / HIPAA Safe',
+      badge: 'AI Demo',
       color: 'amber',
     },
   ];
@@ -109,33 +99,29 @@ export const AIClinicalHub: React.FC = () => {
           <div className="flex items-center gap-2">
             <span className="h-6 px-2.5 rounded-full bg-indigo-100 text-indigo-800 text-[11px] font-bold inline-flex items-center gap-1.5 border border-indigo-200">
               <BrainCircuit className="h-3 w-3 text-indigo-600 animate-spin" />
-              <span>Full-Stack Healthcare AI & ML Platform</span>
+              <span>AI-Assisted Decision Support — Prototype</span>
             </span>
             <span className="text-xs text-slate-400 font-mono">
-              8 Clinical AI Engines Active
+              8 AI Demonstration Modules
             </span>
           </div>
           <h1 className="text-3xl font-extrabold text-slate-900 tracking-tight">
-            DonorConnect AI & Machine Learning Suite
+            Dofi AI Suite
           </h1>
           <p className="text-sm text-slate-500 max-w-2xl">
-            Cutting-edge machine learning survival prognostics (LightGBM/XAI), multimodal computer vision specimen inspection, global precision oncology matching, and trauma dispatch logistics.
+            Google Gemini-powered decision-support tools for donation coordination. All AI outputs are demonstration results requiring qualified clinical review. Not a certified medical system.
           </p>
         </div>
 
         {/* Quick Metrics Bar */}
         <div className="flex items-center gap-3 self-start md:self-auto bg-white p-2 rounded-xl border border-slate-200 shadow-2xs text-xs">
           <div className="px-3 py-1 border-r border-slate-200">
-            <span className="text-slate-400 text-[10px] uppercase font-bold block">Active Requests</span>
-            <span className="font-mono font-bold text-slate-900">{requests.length} Clinical Files</span>
-          </div>
-          <div className="px-3 py-1 border-r border-slate-200">
-            <span className="text-slate-400 text-[10px] uppercase font-bold block">Verified Donors</span>
-            <span className="font-mono font-bold text-teal-700">{donors.length} Profiles Ready</span>
+            <span className="text-slate-400 text-[10px] uppercase font-bold block">Sample Requests</span>
+            <span className="font-mono font-bold text-slate-900">{requests.length} Demo Files</span>
           </div>
           <div className="px-3 py-1">
-            <span className="text-slate-400 text-[10px] uppercase font-bold block">Model Concordance</span>
-            <span className="font-mono font-bold text-indigo-600">C-Index 0.884</span>
+            <span className="text-slate-400 text-[10px] uppercase font-bold block">Sample Donors</span>
+            <span className="font-mono font-bold text-teal-700">{donors.length} Demo Profiles</span>
           </div>
         </div>
       </div>
@@ -196,7 +182,6 @@ export const AIClinicalHub: React.FC = () => {
         {aiActiveModule === 'biomatch_ml' && <BioMatchMLView />}
         {aiActiveModule === 'vision_lab' && <AIVisionLabView />}
         {aiActiveModule === 'oncology_trials' && <AIOncologyTrialView />}
-        {aiActiveModule === 'crossmatch' && <AICrossmatchView />}
         {aiActiveModule === 'screener' && <AIEligibilityView />}
         {aiActiveModule === 'dispatch' && <AIEmergencyDispatchView />}
         {aiActiveModule === 'lab' && <AILabScannerView />}

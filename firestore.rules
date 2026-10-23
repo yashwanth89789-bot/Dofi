@@ -11,15 +11,13 @@ service cloud.firestore {
       return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
     }
 
-    // Admins have broadest governance
     function isAdmin() {
       return isSignedIn() && (
-        request.auth.token.email == 'yashwanth89789@gmail.com' ||
+        request.auth.token.email == 'mohammedayaan9683@gmail.com' ||
         (exists(/databases/$(database)/documents/users/$(request.auth.uid)) && getUserData().role == 'admin')
       );
     }
 
-    // Doctors and clinical staff have medical access
     function isDoctorOrStaff() {
       return isSignedIn() && (
         isAdmin() ||
@@ -31,23 +29,58 @@ service cloud.firestore {
       );
     }
 
-    // Connection validation endpoint
+    // Helper: Verify if current user is affiliated with the hospital for a donor response
+    function isAssociatedHospital(data) {
+      return (
+        ('requesterId' in data && data.requesterId == request.auth.uid) ||
+        (isDoctorOrStaff() && 'hospitalId' in data && exists(/databases/$(database)/documents/users/$(request.auth.uid)) && getUserData().organizationId == data.hospitalId)
+      );
+    }
+
+    // Helper: Privacy rule - forbid exposing phone numbers, emails, or street addresses
+    function hasNoSensitiveContact(data) {
+      return !('phone' in data) && !('email' in data) && !('address' in data);
+    }
+
+    // Helper: Ensure immutable key ownership on updates
+    function isImmutableKeyOwnership(newData, oldData) {
+      return newData.donorUserId == oldData.donorUserId &&
+             newData.requestId == oldData.requestId &&
+             (!('hospitalId' in oldData) || newData.hospitalId == oldData.hospitalId) &&
+             (!('requesterId' in oldData) || newData.requesterId == oldData.requesterId);
+    }
+
+    // Connection test collection — readable publicly for Firebase connection checks
     match /test/{docId} {
       allow read: if true;
       allow write: if isSignedIn();
     }
 
-    // Registered users in the app
+    // Users: role changes are performed only by an authorized administrator.
+    // A browser client must never be able to self-assign admin privileges.
     match /users/{userId} {
-      allow read: if true;
-      allow create, update: if isSignedIn() && (request.auth.uid == userId || isAdmin());
+      allow read: if isSignedIn() && (request.auth.uid == userId || isAdmin() || isDoctorOrStaff());
+      allow create: if isSignedIn()
+        && request.auth.uid == userId
+        && request.resource.data.id == request.auth.uid
+        && (request.resource.data.role == 'donor' || isAdmin());
+      allow update: if isAdmin() || (
+        isSignedIn()
+        && request.auth.uid == userId
+        && request.resource.data.role == resource.data.role
+        && request.resource.data.isVerified == resource.data.isVerified
+      );
       allow delete: if isAdmin();
     }
 
-    // Registered donations and donor records
+    // Donation registrations: require auth to create; owner/admin/doctor can read
     match /donation_registrations/{registrationId} {
-      allow read: if true;
-      allow create: if true;
+      allow read: if isSignedIn() && (
+        isAdmin() ||
+        isDoctorOrStaff() ||
+        resource.data.registeredByUserId == request.auth.uid
+      );
+      allow create: if isSignedIn();
       allow update, delete: if isSignedIn() && (
         isAdmin() ||
         isDoctorOrStaff() ||
@@ -55,19 +88,72 @@ service cloud.firestore {
       );
     }
 
-    // Legacy or synced donors collection
-    match /donors/{donorId} {
-      allow read: if true;
-      allow create: if true;
-      allow update, delete: if isSignedIn() && (isAdmin() || isDoctorOrStaff() || resource.data.userId == request.auth.uid);
+    // Donation requests: readable by any signed-in user; writable by owner/admin/doctor
+    match /donation_requests/{requestId} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn();
+      allow update: if isSignedIn() && (
+        isAdmin() ||
+        isDoctorOrStaff() ||
+        resource.data.requesterId == request.auth.uid
+      );
+      allow delete: if isAdmin();
     }
 
-    // Donation requests and clinical requisitions
-    match /donation_requests/{requestId} {
+    // Blood banks: public reference data — read-only for all, writable only by admin
+    match /blood_banks/{bankId} {
       allow read: if true;
-      allow create: if true;
-      allow update, delete: if isSignedIn();
+      allow write: if isAdmin();
+    }
+
+    // Donor responses: coordination between donors, hospitals, and admins
+    // Phase 5 Security Hardening
+    match /donor_responses/{responseId} {
+      // 1. READ:
+      // - Admin: platform-wide access
+      // - Donor: can read only their own response
+      // - Hospital: can read responses ONLY for blood requests belonging to that hospital
+      allow read: if isSignedIn() && (
+        isAdmin() ||
+        resource.data.donorUserId == request.auth.uid ||
+        isAssociatedHospital(resource.data)
+      );
+
+      // 2. CREATE:
+      // - Donor can only create a response for their own authenticated user ID
+      // - Initial status must be 'available'
+      // - Privacy: no phone, email, or precise address
+      // - Client security: if the target blood request exists in Firestore,
+      //   hospitalId and requesterId must match to prevent spoofing
+      allow create: if isSignedIn()
+        && request.resource.data.donorUserId == request.auth.uid
+        && hasNoSensitiveContact(request.resource.data)
+        && request.resource.data.status == 'available'
+        && (
+          !exists(/databases/$(database)/documents/donation_requests/$(request.resource.data.requestId)) || (
+            request.resource.data.hospitalId == get(/databases/$(database)/documents/donation_requests/$(request.resource.data.requestId)).data.hospitalId &&
+            request.resource.data.requesterId == get(/databases/$(database)/documents/donation_requests/$(request.resource.data.requestId)).data.requesterId
+          )
+        );
+
+      // 3. UPDATE:
+      // - Admin: full operational update
+      // - Donor: can update only their own response (e.g. status to 'cancelled' or notes)
+      // - Hospital: can update response status (e.g. 'confirmed', 'fulfilled') for their facility's requests
+      // - In all cases: ownership fields (donorUserId, requestId, hospitalId, requesterId) are immutable
+      // - Privacy: sensitive contact data cannot be attached
+      allow update: if isSignedIn()
+        && hasNoSensitiveContact(request.resource.data)
+        && isImmutableKeyOwnership(request.resource.data, resource.data)
+        && (
+          isAdmin() ||
+          resource.data.donorUserId == request.auth.uid ||
+          isAssociatedHospital(resource.data)
+        );
+
+      // 4. DELETE:
+      // - Admin only
+      allow delete: if isAdmin();
     }
   }
 }
-
